@@ -459,6 +459,7 @@ def aplicar_actualizacion_terminal(row_id, nuevo_hotel, nueva_area, nuevo_depart
     st.success("Datafono actualizado correctamente.")
 
 
+
 def cambios_decomisos():
     header()
     st.subheader("Reporte de cambios, resguardos y decomisos")
@@ -472,7 +473,8 @@ def cambios_decomisos():
     departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
 
-    with st.expander("Filtros del reporte", expanded=True):
+    with st.container(border=True):
+        st.markdown("#### Filtros del reporte")
         c1, c2, c3, c4 = st.columns(4)
         f_hotel = c1.multiselect("Hotel", hoteles, key="rep_hotel")
         f_depto = c2.multiselect("Departamento", departamentos, key="rep_depto")
@@ -490,21 +492,79 @@ def cambios_decomisos():
         b = busqueda.lower()
         filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
 
-    st.caption("Selecciona una terminal del reporte y usa los tres puntos para editar el estatus o ver la bitácora.")
+    st.markdown("### Terminales registradas")
+    st.caption("Cada fila tiene su propio menú de tres puntos para editar el estatus o consultar la bitácora.")
 
-    report_cols = ["numero_terminal", "numero_afiliado", "hotel", "area", "departamento", "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por", "observacion"]
-    st.dataframe(filtered[report_cols], use_container_width=True, hide_index=True)
+    # Encabezado tipo reporte
+    header_cols = st.columns([1.1, 1.2, 1.1, 1.1, 1.25, 1.2, 1.0, 1.0, 0.45])
+    headers = ["Terminal", "Afiliado", "Hotel", "Área", "Departamento", "Responsable", "Estatus", "Fecha", "Acción"]
+    for col, title in zip(header_cols, headers):
+        col.markdown(f"**{title}**")
 
     st.divider()
-    c1, c2 = st.columns([2, 1])
-    terminales = filtered["numero_terminal"].tolist()
-    terminal_sel = c1.selectbox("Seleccione terminal", terminales)
-    accion = c2.selectbox("⋮ Acción", ["Ver bitácora", "Editar estatus / ubicación"])
 
-    row = filtered[filtered["numero_terminal"] == terminal_sel].iloc[0]
+    if "selected_terminal_action" not in st.session_state:
+        st.session_state["selected_terminal_action"] = None
+    if "selected_terminal_id" not in st.session_state:
+        st.session_state["selected_terminal_id"] = None
 
-    if accion == "Ver bitácora":
-        st.markdown("### Bitácora de cambios")
+    for _, row in filtered.iterrows():
+        row_id = str(row["id"])
+        terminal = str(row["numero_terminal"])
+
+        cols = st.columns([1.1, 1.2, 1.1, 1.1, 1.25, 1.2, 1.0, 1.0, 0.45])
+
+        cols[0].markdown(f"**{terminal}**")
+        cols[1].write(row["numero_afiliado"])
+        cols[2].write(row["hotel"])
+        cols[3].write(row["area"])
+        cols[4].write(row["departamento"])
+        cols[5].write(row["responsable"])
+
+        status = str(row["estatus"])
+        if status == "Activo":
+            cols[6].success(status)
+        elif status == "Resguardo":
+            cols[6].info(status)
+        elif status in ["Decomisado", "Baja"]:
+            cols[6].error(status)
+        elif status == "En reparación":
+            cols[6].warning(status)
+        else:
+            cols[6].write(status)
+
+        cols[7].write(row["fecha_asignacion"])
+
+        with cols[8].popover("⋮", use_container_width=True):
+            st.markdown(f"**Terminal {terminal}**")
+            if st.button("✏️ Editar estatus", key=f"edit_{row_id}", use_container_width=True):
+                st.session_state["selected_terminal_action"] = "editar"
+                st.session_state["selected_terminal_id"] = row_id
+                st.rerun()
+            if st.button("📋 Ver bitácora", key=f"hist_{row_id}", use_container_width=True):
+                st.session_state["selected_terminal_action"] = "bitacora"
+                st.session_state["selected_terminal_id"] = row_id
+                st.rerun()
+
+        st.divider()
+
+    selected_id = st.session_state.get("selected_terminal_id")
+    selected_action = st.session_state.get("selected_terminal_action")
+
+    if not selected_id:
+        st.info("Selecciona los tres puntos de una terminal para editar o ver su bitácora.")
+        return
+
+    selected_df = df[df["id"] == selected_id]
+    if selected_df.empty:
+        st.warning("La terminal seleccionada ya no existe o fue actualizada.")
+        return
+
+    row = selected_df.iloc[0]
+    terminal_sel = str(row["numero_terminal"])
+
+    if selected_action == "bitacora":
+        st.markdown(f"### Bitácora de cambios — Terminal {terminal_sel}")
         hist = get_history()
         bitacora = hist[
             (hist["terminal_anterior"] == terminal_sel) |
@@ -515,41 +575,59 @@ def cambios_decomisos():
         else:
             st.dataframe(bitacora.sort_index(ascending=False), use_container_width=True, hide_index=True)
 
-    if accion == "Editar estatus / ubicación":
-        st.markdown("### Editar datafono")
+    if selected_action == "editar":
+        st.markdown(f"### Editar estatus / ubicación — Terminal {terminal_sel}")
 
-        with st.form("form_editar_terminal"):
-            c1, c2, c3 = st.columns(3)
-            nuevo_hotel = c1.selectbox("Hotel", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
-            nueva_area = c2.text_input("Área", value=row["area"])
-            nuevo_departamento = c3.selectbox("Departamento", departamentos, index=departamentos.index(row["departamento"]) if row["departamento"] in departamentos else 0)
-
-            c4, c5, c6 = st.columns(3)
-            nuevo_responsable = c4.text_input("Responsable", value=row["responsable"])
-            nuevo_estatus = c5.selectbox("Estatus", estatus_list, index=estatus_list.index(row["estatus"]) if row["estatus"] in estatus_list else 0)
-            fecha_cambio = c6.date_input("Fecha cambio", value=date.today())
-
-            c7, c8 = st.columns(2)
-            sustituido_por = c7.text_input("Sustituido por", value=row["sustituido_por"])
-            motivo = c8.text_input("Motivo", value="Actualización de estatus / ubicación")
-
-            observacion = st.text_area("Observación", value=row["observacion"])
-            guardar = st.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
-
-        if guardar:
-            aplicar_actualizacion_terminal(
-                row_id=row["id"],
-                nuevo_hotel=nuevo_hotel,
-                nueva_area=nueva_area,
-                nuevo_departamento=nuevo_departamento,
-                nuevo_responsable=nuevo_responsable,
-                nuevo_estatus=nuevo_estatus,
-                fecha_cambio=fecha_cambio,
-                sustituido_por=sustituido_por,
-                motivo=motivo,
-                observacion=observacion
+        with st.container(border=True):
+            st.markdown(
+                f"""
+                **Datos actuales:**  
+                Terminal: **{row['numero_terminal']}** | Afiliado: **{row['numero_afiliado']}** | 
+                Hotel: **{row['hotel']}** | Estatus: **{row['estatus']}**
+                """
             )
-            st.rerun()
+
+            with st.form("form_editar_terminal"):
+                c1, c2, c3 = st.columns(3)
+                nuevo_hotel = c1.selectbox("Hotel", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
+                nueva_area = c2.text_input("Área", value=row["area"])
+                nuevo_departamento = c3.selectbox("Departamento", departamentos, index=departamentos.index(row["departamento"]) if row["departamento"] in departamentos else 0)
+
+                c4, c5, c6 = st.columns(3)
+                nuevo_responsable = c4.text_input("Responsable", value=row["responsable"])
+                nuevo_estatus = c5.selectbox("Estatus", estatus_list, index=estatus_list.index(row["estatus"]) if row["estatus"] in estatus_list else 0)
+                fecha_cambio = c6.date_input("Fecha cambio", value=date.today())
+
+                c7, c8 = st.columns(2)
+                sustituido_por = c7.text_input("Sustituido por", value=row["sustituido_por"])
+                motivo = c8.text_input("Motivo", value="Actualización de estatus / ubicación")
+
+                observacion = st.text_area("Observación", value=row["observacion"])
+
+                b1, b2 = st.columns([1, 1])
+                guardar = b1.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
+                cancelar = b2.form_submit_button("Cancelar", use_container_width=True)
+
+            if cancelar:
+                st.session_state["selected_terminal_action"] = None
+                st.session_state["selected_terminal_id"] = None
+                st.rerun()
+
+            if guardar:
+                aplicar_actualizacion_terminal(
+                    row_id=row["id"],
+                    nuevo_hotel=nuevo_hotel,
+                    nueva_area=nueva_area,
+                    nuevo_departamento=nuevo_departamento,
+                    nuevo_responsable=nuevo_responsable,
+                    nuevo_estatus=nuevo_estatus,
+                    fecha_cambio=fecha_cambio,
+                    sustituido_por=sustituido_por,
+                    motivo=motivo,
+                    observacion=observacion
+                )
+                st.session_state["selected_terminal_action"] = "bitacora"
+                st.rerun()
 
 
 def historial():
