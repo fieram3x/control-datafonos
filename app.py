@@ -78,6 +78,10 @@ CUSTOM_CSS = """
     .pill-default {background:#F1F5F9; color:#334155;}
     .mini-label {font-size:0.75rem; color:#64748B; margin-bottom:0;}
     .mini-value {font-size:0.95rem; color:#0F172A; font-weight:600;}
+
+    /* Ocultar botones superiores innecesarios y dejar la vista limpia */
+    [data-testid="stToolbar"] > div:not(:last-child) {display: none !important;}
+    [data-testid="stDecoration"] {display: none !important;}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -270,19 +274,33 @@ def status_html(status):
 
 def df_to_excel_bytes(sheets):
     output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
-    return output.getvalue()
+    try:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            for sheet_name, df in sheets.items():
+                df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+        return output.getvalue()
+    except ModuleNotFoundError:
+        return None
+
+
+def get_registered_options(df, column):
+    if df.empty or column not in df.columns:
+        return []
+    values = sorted([v for v in df[column].astype(str).str.strip().unique().tolist() if v])
+    return values
 
 
 def apply_common_filters(df, hoteles, departamentos, estatus_list, prefix=""):
+    hoteles_registrados = get_registered_options(df, "hotel")
+    departamentos_registrados = get_registered_options(df, "departamento")
+    estatus_registrados = get_registered_options(df, "estatus")
+
     with st.container(border=True):
         st.markdown("#### Filtros")
         c1, c2, c3, c4 = st.columns(4)
-        f_hotel = c1.multiselect("Hotel", hoteles, key=f"{prefix}_hotel")
-        f_depto = c2.multiselect("Departamento", departamentos, key=f"{prefix}_depto")
-        f_estatus = c3.multiselect("Estatus", estatus_list, key=f"{prefix}_estatus")
+        f_hotel = c1.multiselect("Hotel", hoteles_registrados, key=f"{prefix}_hotel", placeholder="Seleccione")
+        f_depto = c2.multiselect("Departamento", departamentos_registrados, key=f"{prefix}_depto", placeholder="Seleccione")
+        f_estatus = c3.multiselect("Estatus", estatus_registrados, key=f"{prefix}_estatus", placeholder="Seleccione")
         busqueda = c4.text_input("Buscar", key=f"{prefix}_buscar")
 
     filtered = df.copy()
@@ -402,13 +420,16 @@ def dashboard():
     st.divider()
     st.subheader("Exportación general")
     export_bytes = df_to_excel_bytes({"Inventario": df, "Historial": hist})
-    st.download_button(
-        "Descargar reporte completo en Excel",
-        data=export_bytes,
-        file_name=f"control_datafonos_{date.today()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+    if export_bytes:
+        st.download_button(
+            "Descargar reporte completo en Excel",
+            data=export_bytes,
+            file_name=f"control_datafonos_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    else:
+        st.info("Para activar la exportación a Excel, agrega openpyxl al archivo requirements.txt.")
 
 
 
@@ -435,13 +456,17 @@ def inventario():
         use_container_width=True
     )
     excel_bytes = df_to_excel_bytes({"Inventario": filtered})
-    col2.download_button(
-        "Descargar inventario Excel",
-        data=excel_bytes,
-        file_name=f"inventario_datafonos_{date.today()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+    if excel_bytes:
+        col2.download_button(
+            "Descargar inventario Excel",
+            data=excel_bytes,
+            file_name=f"inventario_datafonos_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+    else:
+        col2.info("Agrega openpyxl a requirements.txt para exportar Excel.")
+
 
 
 def registrar_datafono():
@@ -454,24 +479,24 @@ def registrar_datafono():
 
     with st.form("form_registro", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        numero_terminal = c1.text_input("Número Terminal *")
-        numero_afiliado = c2.text_input("Número Afiliado *")
-        hotel = c3.selectbox("Hotel *", hoteles)
+        numero_terminal = c1.text_input("Número Terminal *", value="")
+        numero_afiliado = c2.text_input("Número Afiliado *", value="")
+        hotel = c3.selectbox("Hotel *", hoteles, index=None, placeholder="Seleccione hotel")
 
         c4, c5, c6 = st.columns(3)
-        area = c4.text_input("Área *")
-        departamento = c5.selectbox("Departamento *", departamentos)
-        responsable = c6.text_input("Responsable")
+        area = c4.text_input("Área *", value="")
+        departamento = c5.selectbox("Departamento *", departamentos, index=None, placeholder="Seleccione departamento")
+        responsable = c6.text_input("Responsable", value="")
 
         c7, c8 = st.columns(2)
-        estatus = c7.selectbox("Estatus", estatus_list, index=0)
+        estatus = c7.selectbox("Estatus *", estatus_list, index=None, placeholder="Seleccione estatus")
         fecha_asignacion = c8.date_input("Fecha asignación", value=date.today())
 
-        observacion = st.text_area("Observación")
+        observacion = st.text_area("Observación", value="")
         submitted = st.form_submit_button("Guardar datafono", use_container_width=True)
 
     if submitted:
-        if not numero_terminal or not numero_afiliado or not area:
+        if not numero_terminal or not numero_afiliado or not hotel or not area or not departamento or not estatus:
             st.error("Completa los campos obligatorios.")
             return
 
@@ -711,13 +736,16 @@ def historial():
             use_container_width=True
         )
         excel_bytes = df_to_excel_bytes({"Historial": filtered})
-        c2.download_button(
-            "Descargar historial Excel",
-            data=excel_bytes,
-            file_name=f"historial_cambios_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        if excel_bytes:
+            c2.download_button(
+                "Descargar historial Excel",
+                data=excel_bytes,
+                file_name=f"historial_cambios_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            c2.info("Agrega openpyxl a requirements.txt para exportar Excel.")
 
 
 def administrar_usuarios():
