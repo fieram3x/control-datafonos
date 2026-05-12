@@ -375,45 +375,10 @@ def header():
 
 def login():
     st.markdown("""
-    <div class="title-card">
-        <div style="
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            gap:16px;
-        ">
-
-            <div style="
-                font-size:48px;
-                background:#FFFFFF;
-                width:72px;
-                height:72px;
-                border-radius:20px;
-                display:flex;
-                align-items:center;
-                justify-content:center;
-                box-shadow:0 4px 15px rgba(0,0,0,0.08);
-            ">
-                💳
-            </div>
-
-            <div>
-                <h1 style="
-                    margin:0;
-                    text-align:left;
-                ">
-                    Control de Datafonos
-                </h1>
-
-                <p style="
-                    margin-top:8px;
-                    text-align:left;
-                ">
-                    Acceso seguro al panel profesional de control, resguardo, cambios y decomisos.
-                </p>
-            </div>
-
-        </div>
+    <div class="title-card" style="text-align:center;">
+        <div style="font-size:48px;">💳</div>
+        <h1>Control de Datafonos</h1>
+        <p>Acceso seguro al panel profesional de control, resguardo, cambios y decomisos.</p>
     </div>
     """, unsafe_allow_html=True)
 
