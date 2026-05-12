@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 import uuid
+from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -37,8 +38,11 @@ CONFIG_DEFAULT = {
 CUSTOM_CSS = """
 <style>
     .main {background-color: #F7FAFC;}
-    [data-testid="stSidebar"] {background-color: #FFFFFF;}
-    .block-container {padding-top: 1.5rem;}
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+        border-right: 1px solid #E5E7EB;
+    }
+    .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
     .title-card {
         background: linear-gradient(135deg, #EAF6FF 0%, #FFFFFF 72%);
         border: 1px solid #D7ECFF;
@@ -47,17 +51,8 @@ CUSTOM_CSS = """
         margin-bottom: 18px;
         box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
     }
-    .title-card h1 {
-        margin: 0;
-        color: #0F172A;
-        font-size: 2rem;
-        font-weight: 800;
-    }
-    .title-card p {
-        color: #475569;
-        margin: 7px 0 0 0;
-        font-size: 1rem;
-    }
+    .title-card h1 {margin: 0; color: #0F172A; font-size: 2rem; font-weight: 800;}
+    .title-card p {color: #475569; margin: 7px 0 0 0; font-size: 1rem;}
     div[data-testid="stMetric"] {
         background: white;
         border: 1px solid #E5E7EB;
@@ -66,6 +61,23 @@ CUSTOM_CSS = """
         box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
     }
     .small-note {color: #64748B; font-size: 0.9rem;}
+    .status-pill {
+        padding: 5px 10px;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        display: inline-block;
+        text-align: center;
+    }
+    .pill-activo {background:#DCFCE7; color:#166534;}
+    .pill-resguardo {background:#DBEAFE; color:#1D4ED8;}
+    .pill-reparacion {background:#FFEDD5; color:#C2410C;}
+    .pill-sustituido {background:#F3E8FF; color:#7E22CE;}
+    .pill-decomisado {background:#FEE2E2; color:#991B1B;}
+    .pill-baja {background:#E5E7EB; color:#374151;}
+    .pill-default {background:#F1F5F9; color:#334155;}
+    .mini-label {font-size:0.75rem; color:#64748B; margin-bottom:0;}
+    .mini-value {font-size:0.95rem; color:#0F172A; font-weight:600;}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -242,6 +254,51 @@ def add_history(terminal_anterior, terminal_nueva, hotel, area, departamento, es
     save_history(hist)
 
 
+def status_html(status):
+    status_clean = str(status).strip()
+    css_map = {
+        "Activo": "pill-activo",
+        "Resguardo": "pill-resguardo",
+        "En reparación": "pill-reparacion",
+        "Sustituido": "pill-sustituido",
+        "Decomisado": "pill-decomisado",
+        "Baja": "pill-baja"
+    }
+    css_class = css_map.get(status_clean, "pill-default")
+    return f'<span class="status-pill {css_class}">{status_clean}</span>'
+
+
+def df_to_excel_bytes(sheets):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+    return output.getvalue()
+
+
+def apply_common_filters(df, hoteles, departamentos, estatus_list, prefix=""):
+    with st.container(border=True):
+        st.markdown("#### Filtros")
+        c1, c2, c3, c4 = st.columns(4)
+        f_hotel = c1.multiselect("Hotel", hoteles, key=f"{prefix}_hotel")
+        f_depto = c2.multiselect("Departamento", departamentos, key=f"{prefix}_depto")
+        f_estatus = c3.multiselect("Estatus", estatus_list, key=f"{prefix}_estatus")
+        busqueda = c4.text_input("Buscar", key=f"{prefix}_buscar")
+
+    filtered = df.copy()
+    if f_hotel:
+        filtered = filtered[filtered["hotel"].isin(f_hotel)]
+    if f_depto:
+        filtered = filtered[filtered["departamento"].isin(f_depto)]
+    if f_estatus:
+        filtered = filtered[filtered["estatus"].isin(f_estatus)]
+    if busqueda:
+        b = busqueda.lower()
+        filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
+
+    return filtered
+
+
 def header():
     st.markdown("""
     <div class="title-card">
@@ -280,48 +337,79 @@ def login():
                 st.error("Usuario o contraseña incorrectos.")
 
 
+
 def dashboard():
     header()
     df = get_inventory()
+    hist = get_history()
 
     total = len(df)
     activos = int((df["estatus"] == "Activo").sum()) if not df.empty else 0
     resguardo = int((df["estatus"] == "Resguardo").sum()) if not df.empty else 0
     reparacion = int((df["estatus"] == "En reparación").sum()) if not df.empty else 0
     decomisados = int((df["estatus"] == "Decomisado").sum()) if not df.empty else 0
+    bajas = int((df["estatus"] == "Baja").sum()) if not df.empty else 0
+    cambios_mes = len(hist[hist["fecha"].astype(str).str.startswith(str(date.today())[:7])]) if not hist.empty else 0
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    st.markdown("### Panel ejecutivo")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Total", total)
     c2.metric("Activos", activos)
     c3.metric("Resguardo", resguardo)
     c4.metric("En reparación", reparacion)
-    c5.metric("Decomisados", decomisados)
+    c5.metric("Decomisados/Baja", decomisados + bajas)
+    c6.metric("Cambios del mes", cambios_mes)
 
     st.divider()
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.subheader("Datafonos por hotel")
-        if not df.empty:
-            chart = df.groupby("hotel").size().reset_index(name="Cantidad")
-            st.bar_chart(chart, x="hotel", y="Cantidad", use_container_width=True)
-        else:
-            st.info("Aún no hay datafonos registrados.")
+        with st.container(border=True):
+            st.subheader("Distribución por hotel")
+            if not df.empty:
+                chart = df.groupby("hotel").size().reset_index(name="Cantidad")
+                st.bar_chart(chart, x="hotel", y="Cantidad", use_container_width=True)
+            else:
+                st.info("Aún no hay datafonos registrados.")
 
     with col_b:
-        st.subheader("Datafonos por estatus")
-        if not df.empty:
-            chart = df.groupby("estatus").size().reset_index(name="Cantidad")
-            st.bar_chart(chart, x="estatus", y="Cantidad", use_container_width=True)
-        else:
-            st.info("Aún no hay datafonos registrados.")
+        with st.container(border=True):
+            st.subheader("Distribución por estatus")
+            if not df.empty:
+                chart = df.groupby("estatus").size().reset_index(name="Cantidad")
+                st.bar_chart(chart, x="estatus", y="Cantidad", use_container_width=True)
+            else:
+                st.info("Aún no hay datafonos registrados.")
 
-    st.subheader("Últimos movimientos")
-    hist = get_history()
-    if hist.empty:
-        st.info("No hay movimientos registrados.")
-    else:
-        st.dataframe(hist.tail(10).sort_index(ascending=False), use_container_width=True, hide_index=True)
+    col_c, col_d = st.columns(2)
+    with col_c:
+        with st.container(border=True):
+            st.subheader("Datafonos por departamento")
+            if not df.empty:
+                dept = df.groupby("departamento").size().reset_index(name="Cantidad")
+                st.dataframe(dept, use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin datos.")
+
+    with col_d:
+        with st.container(border=True):
+            st.subheader("Últimos movimientos")
+            if hist.empty:
+                st.info("No hay movimientos registrados.")
+            else:
+                st.dataframe(hist.tail(8).sort_index(ascending=False), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Exportación general")
+    export_bytes = df_to_excel_bytes({"Inventario": df, "Historial": hist})
+    st.download_button(
+        "Descargar reporte completo en Excel",
+        data=export_bytes,
+        file_name=f"control_datafonos_{date.today()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
 
 
 def inventario():
@@ -333,31 +421,25 @@ def inventario():
     departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
 
-    with st.expander("Filtros", expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
-        f_hotel = c1.multiselect("Hotel", hoteles)
-        f_depto = c2.multiselect("Departamento", departamentos)
-        f_estatus = c3.multiselect("Estatus", estatus_list)
-        busqueda = c4.text_input("Buscar")
+    filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="inv")
 
-    filtered = df.copy()
-    if f_hotel:
-        filtered = filtered[filtered["hotel"].isin(f_hotel)]
-    if f_depto:
-        filtered = filtered[filtered["departamento"].isin(f_depto)]
-    if f_estatus:
-        filtered = filtered[filtered["estatus"].isin(f_estatus)]
-    if busqueda:
-        b = busqueda.lower()
-        filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
-
+    st.markdown("### Resultado")
     st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-    st.download_button(
+    col1, col2 = st.columns(2)
+    col1.download_button(
         "Descargar inventario CSV",
         filtered.to_csv(index=False).encode("utf-8"),
         "inventario_datafonos.csv",
         "text/csv",
+        use_container_width=True
+    )
+    excel_bytes = df_to_excel_bytes({"Inventario": filtered})
+    col2.download_button(
+        "Descargar inventario Excel",
+        data=excel_bytes,
+        file_name=f"inventario_datafonos_{date.today()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
 
@@ -460,6 +542,7 @@ def aplicar_actualizacion_terminal(row_id, nuevo_hotel, nueva_area, nuevo_depart
 
 
 
+
 def cambios_decomisos():
     header()
     st.subheader("Reporte de cambios, resguardos y decomisos")
@@ -473,83 +556,47 @@ def cambios_decomisos():
     departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
 
-    with st.container(border=True):
-        st.markdown("#### Filtros del reporte")
-        c1, c2, c3, c4 = st.columns(4)
-        f_hotel = c1.multiselect("Hotel", hoteles, key="rep_hotel")
-        f_depto = c2.multiselect("Departamento", departamentos, key="rep_depto")
-        f_estatus = c3.multiselect("Estatus", estatus_list, key="rep_estatus")
-        busqueda = c4.text_input("Buscar terminal / afiliado / área", key="rep_buscar")
-
-    filtered = df.copy()
-    if f_hotel:
-        filtered = filtered[filtered["hotel"].isin(f_hotel)]
-    if f_depto:
-        filtered = filtered[filtered["departamento"].isin(f_depto)]
-    if f_estatus:
-        filtered = filtered[filtered["estatus"].isin(f_estatus)]
-    if busqueda:
-        b = busqueda.lower()
-        filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
+    filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="rep")
 
     st.markdown("### Terminales registradas")
-    st.caption("Cada fila tiene su propio menú de tres puntos para editar el estatus o consultar la bitácora.")
-
-    # Encabezado tipo reporte
-    header_cols = st.columns([1.1, 1.2, 1.1, 1.1, 1.25, 1.2, 1.0, 1.0, 0.45])
-    headers = ["Terminal", "Afiliado", "Hotel", "Área", "Departamento", "Responsable", "Estatus", "Fecha", "Acción"]
-    for col, title in zip(header_cols, headers):
-        col.markdown(f"**{title}**")
-
-    st.divider()
+    st.caption("Cada terminal tiene su menú de tres puntos para editar el estatus o consultar su bitácora.")
 
     if "selected_terminal_action" not in st.session_state:
         st.session_state["selected_terminal_action"] = None
     if "selected_terminal_id" not in st.session_state:
         st.session_state["selected_terminal_id"] = None
 
+    if filtered.empty:
+        st.warning("No hay resultados con los filtros seleccionados.")
+        return
+
     for _, row in filtered.iterrows():
         row_id = str(row["id"])
         terminal = str(row["numero_terminal"])
 
-        cols = st.columns([1.1, 1.2, 1.1, 1.1, 1.25, 1.2, 1.0, 1.0, 0.45])
+        with st.container(border=True):
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
+            c1.markdown(f"<p class='mini-label'>Terminal</p><p class='mini-value'>{terminal}</p>", unsafe_allow_html=True)
+            c2.markdown(f"<p class='mini-label'>Afiliado</p><p class='mini-value'>{row['numero_afiliado']}</p>", unsafe_allow_html=True)
+            c3.markdown(f"<p class='mini-label'>Hotel</p><p class='mini-value'>{row['hotel']}</p>", unsafe_allow_html=True)
+            c4.markdown(f"<p class='mini-label'>Área / Depto.</p><p class='mini-value'>{row['area']} / {row['departamento']}</p>", unsafe_allow_html=True)
+            c5.markdown(f"<p class='mini-label'>Responsable</p><p class='mini-value'>{row['responsable']}</p>", unsafe_allow_html=True)
+            c6.markdown(f"<p class='mini-label'>Estatus</p>{status_html(row['estatus'])}", unsafe_allow_html=True)
 
-        cols[0].markdown(f"**{terminal}**")
-        cols[1].write(row["numero_afiliado"])
-        cols[2].write(row["hotel"])
-        cols[3].write(row["area"])
-        cols[4].write(row["departamento"])
-        cols[5].write(row["responsable"])
-
-        status = str(row["estatus"])
-        if status == "Activo":
-            cols[6].success(status)
-        elif status == "Resguardo":
-            cols[6].info(status)
-        elif status in ["Decomisado", "Baja"]:
-            cols[6].error(status)
-        elif status == "En reparación":
-            cols[6].warning(status)
-        else:
-            cols[6].write(status)
-
-        cols[7].write(row["fecha_asignacion"])
-
-        with cols[8].popover("⋮", use_container_width=True):
-            st.markdown(f"**Terminal {terminal}**")
-            if st.button("✏️ Editar estatus", key=f"edit_{row_id}", use_container_width=True):
-                st.session_state["selected_terminal_action"] = "editar"
-                st.session_state["selected_terminal_id"] = row_id
-                st.rerun()
-            if st.button("📋 Ver bitácora", key=f"hist_{row_id}", use_container_width=True):
-                st.session_state["selected_terminal_action"] = "bitacora"
-                st.session_state["selected_terminal_id"] = row_id
-                st.rerun()
-
-        st.divider()
+            with c7.popover("⋮", use_container_width=True):
+                st.markdown(f"**Terminal {terminal}**")
+                if st.button("✏️ Editar", key=f"edit_{row_id}", use_container_width=True):
+                    st.session_state["selected_terminal_action"] = "editar"
+                    st.session_state["selected_terminal_id"] = row_id
+                    st.rerun()
+                if st.button("📋 Bitácora", key=f"hist_{row_id}", use_container_width=True):
+                    st.session_state["selected_terminal_action"] = "bitacora"
+                    st.session_state["selected_terminal_id"] = row_id
+                    st.rerun()
 
     selected_id = st.session_state.get("selected_terminal_id")
     selected_action = st.session_state.get("selected_terminal_action")
+    st.divider()
 
     if not selected_id:
         st.info("Selecciona los tres puntos de una terminal para editar o ver su bitácora.")
@@ -566,10 +613,7 @@ def cambios_decomisos():
     if selected_action == "bitacora":
         st.markdown(f"### Bitácora de cambios — Terminal {terminal_sel}")
         hist = get_history()
-        bitacora = hist[
-            (hist["terminal_anterior"] == terminal_sel) |
-            (hist["terminal_nueva"] == terminal_sel)
-        ]
+        bitacora = hist[(hist["terminal_anterior"] == terminal_sel) | (hist["terminal_nueva"] == terminal_sel)]
         if bitacora.empty:
             st.info("Esta terminal no tiene cambios registrados.")
         else:
@@ -577,7 +621,6 @@ def cambios_decomisos():
 
     if selected_action == "editar":
         st.markdown(f"### Editar estatus / ubicación — Terminal {terminal_sel}")
-
         with st.container(border=True):
             st.markdown(
                 f"""
@@ -586,7 +629,6 @@ def cambios_decomisos():
                 Hotel: **{row['hotel']}** | Estatus: **{row['estatus']}**
                 """
             )
-
             with st.form("form_editar_terminal"):
                 c1, c2, c3 = st.columns(3)
                 nuevo_hotel = c1.selectbox("Hotel", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
@@ -601,7 +643,6 @@ def cambios_decomisos():
                 c7, c8 = st.columns(2)
                 sustituido_por = c7.text_input("Sustituido por", value=row["sustituido_por"])
                 motivo = c8.text_input("Motivo", value="Actualización de estatus / ubicación")
-
                 observacion = st.text_area("Observación", value=row["observacion"])
 
                 b1, b2 = st.columns([1, 1])
@@ -630,6 +671,7 @@ def cambios_decomisos():
                 st.rerun()
 
 
+
 def historial():
     header()
     st.subheader("Historial de cambios")
@@ -638,12 +680,42 @@ def historial():
     if hist.empty:
         st.info("No hay historial registrado.")
     else:
-        st.dataframe(hist.sort_index(ascending=False), use_container_width=True, hide_index=True)
-        st.download_button(
+        with st.container(border=True):
+            st.markdown("#### Filtros de bitácora")
+            c1, c2, c3 = st.columns(3)
+            terminal_buscar = c1.text_input("Buscar terminal")
+            responsable_buscar = c2.text_input("Buscar responsable")
+            fecha_buscar = c3.text_input("Filtrar por fecha YYYY-MM-DD")
+
+        filtered = hist.copy()
+        if terminal_buscar:
+            b = terminal_buscar.lower()
+            filtered = filtered[
+                filtered["terminal_anterior"].str.lower().str.contains(b, na=False) |
+                filtered["terminal_nueva"].str.lower().str.contains(b, na=False)
+            ]
+        if responsable_buscar:
+            b = responsable_buscar.lower()
+            filtered = filtered[filtered["responsable"].str.lower().str.contains(b, na=False)]
+        if fecha_buscar:
+            filtered = filtered[filtered["fecha"].astype(str).str.contains(fecha_buscar, na=False)]
+
+        st.dataframe(filtered.sort_index(ascending=False), use_container_width=True, hide_index=True)
+
+        c1, c2 = st.columns(2)
+        c1.download_button(
             "Descargar historial CSV",
-            hist.to_csv(index=False).encode("utf-8"),
+            filtered.to_csv(index=False).encode("utf-8"),
             "historial_cambios.csv",
             "text/csv",
+            use_container_width=True
+        )
+        excel_bytes = df_to_excel_bytes({"Historial": filtered})
+        c2.download_button(
+            "Descargar historial Excel",
+            data=excel_bytes,
+            file_name=f"historial_cambios_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
 
