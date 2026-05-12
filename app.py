@@ -27,7 +27,7 @@ HISTORIAL_COLUMNS = [
 USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"]
 
 CONFIG_DEFAULT = {
-    "Hoteles": ["5918-MCB", "5917-MPCB", "5910-PPRL", "5911-ZEL", "5930-PGC"],
+    "Hoteles": ["5918-MCB", "5917-MPCB", "5910-PPRL", "5911-ZEL", "5930-PGC", "6034-GOLF Hoyo 10&9", "6254-TENNIS", "6374-CAISNO"],
     "Departamentos": ["Recepción", "Spa", "A&B", "Hoyo 10&9", "Golf", "Tenis", "Casino", "Administración", "Auditoría", "Otro"],
     "Estatus": ["Activo", "Resguardo", "En reparación", "Sustituido", "Decomisado", "Baja"],
     "Roles": ["Administrador", "Usuario"],
@@ -65,10 +65,7 @@ CUSTOM_CSS = """
         border-radius: 18px;
         box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
     }
-    .small-note {
-        color: #64748B;
-        font-size: 0.9rem;
-    }
+    .small-note {color: #64748B; font-size: 0.9rem;}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -78,7 +75,6 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 def connect_gsheet():
     try:
         spreadsheet_id = st.secrets["google_sheets"]["spreadsheet_id"]
-
         service_account_info = {
             "type": st.secrets["gcp_service_account"]["type"],
             "project_id": st.secrets["gcp_service_account"]["project_id"],
@@ -91,17 +87,15 @@ def connect_gsheet():
             "auth_provider_x509_cert_url": st.secrets["gcp_service_account"]["auth_provider_x509_cert_url"],
             "client_x509_cert_url": st.secrets["gcp_service_account"]["client_x509_cert_url"],
         }
-
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-
         creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
         client = gspread.authorize(creds)
         return client.open_by_key(spreadsheet_id)
     except Exception as e:
-        st.error("No fue posible conectar con Google Sheets. Verifica los Secrets de Streamlit y que el Google Sheet esté compartido con el client_email del JSON.")
+        st.error("No fue posible conectar con Google Sheets. Verifica los Secrets y que el Google Sheet esté compartido con el client_email.")
         st.exception(e)
         st.stop()
 
@@ -112,31 +106,41 @@ def get_ws(name, columns):
         ws = sh.worksheet(name)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=name, rows=1000, cols=max(20, len(columns)))
-        ws.update([columns])
-
+        ws.update("A1", [columns])
     values = ws.get_all_values()
     if not values:
-        ws.update([columns])
-    elif values[0] != columns:
-        existing_headers = values[0]
-        new_headers = existing_headers[:]
-        for col in columns:
-            if col not in new_headers:
-                new_headers.append(col)
-        ws.update("A1", [new_headers])
+        ws.update("A1", [columns])
     return ws
 
 
 def read_sheet(name, columns):
+    """Lectura robusta para evitar errores de get_all_records con encabezados vacíos o duplicados."""
     ws = get_ws(name, columns)
-    records = ws.get_all_records()
-    df = pd.DataFrame(records)
-    for col in columns:
-        if col not in df.columns:
-            df[col] = ""
-    if df.empty:
+    values = ws.get_all_values()
+
+    if not values:
         return pd.DataFrame(columns=columns)
-    return df[columns].astype(str).fillna("")
+
+    raw_headers = values[0]
+    data_rows = values[1:]
+
+    header_positions = {}
+    for idx, header in enumerate(raw_headers):
+        h = str(header).strip()
+        if h and h not in header_positions:
+            header_positions[h] = idx
+
+    records = []
+    for row in data_rows:
+        if not any(str(cell).strip() for cell in row):
+            continue
+        item = {}
+        for col in columns:
+            pos = header_positions.get(col)
+            item[col] = str(row[pos]).strip() if pos is not None and pos < len(row) else ""
+        records.append(item)
+
+    return pd.DataFrame(records, columns=columns).astype(str).fillna("")
 
 
 def write_sheet(name, df, columns):
@@ -147,7 +151,7 @@ def write_sheet(name, df, columns):
             df[col] = ""
     df = df[columns].fillna("")
     ws.clear()
-    ws.update([columns] + df.values.tolist())
+    ws.update("A1", [columns] + df.values.tolist())
 
 
 def read_config():
@@ -157,10 +161,12 @@ def read_config():
         values = ws.get_all_values()
         if not values:
             return CONFIG_DEFAULT
+
         headers = values[0]
         config = {}
         for col_idx, header in enumerate(headers):
-            if not header:
+            key = str(header).strip()
+            if not key:
                 continue
             items = []
             for row in values[1:]:
@@ -168,10 +174,12 @@ def read_config():
                     value = str(row[col_idx]).strip()
                     if value:
                         items.append(value)
-            config[header.strip()] = items
+            config[key] = items
+
         for key, default_values in CONFIG_DEFAULT.items():
             if key not in config or not config[key]:
                 config[key] = default_values
+
         return config
     except Exception:
         return CONFIG_DEFAULT
@@ -413,6 +421,44 @@ def registrar_datafono():
         st.success("Datafono registrado correctamente.")
 
 
+def aplicar_actualizacion_terminal(row_id, nuevo_hotel, nueva_area, nuevo_departamento, nuevo_responsable, nuevo_estatus, fecha_cambio, sustituido_por, motivo, observacion):
+    df = get_inventory()
+    match = df[df["id"] == row_id]
+    if match.empty:
+        st.error("No se encontró el datafono seleccionado.")
+        return
+
+    idx = match.index[0]
+    old = df.loc[idx].copy()
+
+    df.loc[idx, "hotel"] = nuevo_hotel
+    df.loc[idx, "area"] = nueva_area
+    df.loc[idx, "departamento"] = nuevo_departamento
+    df.loc[idx, "responsable"] = nuevo_responsable
+    df.loc[idx, "estatus"] = nuevo_estatus
+    df.loc[idx, "fecha_cambio"] = str(fecha_cambio)
+    df.loc[idx, "sustituido_por"] = sustituido_por
+    df.loc[idx, "observacion"] = observacion
+    df.loc[idx, "actualizado_el"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    save_inventory(df)
+
+    add_history(
+        terminal_anterior=str(old["numero_terminal"]),
+        terminal_nueva=sustituido_por,
+        hotel=nuevo_hotel,
+        area=nueva_area,
+        departamento=nuevo_departamento,
+        estatus_anterior=str(old["estatus"]),
+        estatus_nuevo=nuevo_estatus,
+        motivo=motivo,
+        responsable=nuevo_responsable,
+        observacion=observacion
+    )
+
+    st.success("Datafono actualizado correctamente.")
+
+
 def cambios_decomisos():
     header()
     st.subheader("Reporte de cambios, resguardos y decomisos")
@@ -444,91 +490,66 @@ def cambios_decomisos():
         b = busqueda.lower()
         filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
 
-    st.caption("Edita directamente el reporte y luego presiona **Actualizar reporte**. Los cambios quedan guardados en Google Sheets y se registra el historial.")
+    st.caption("Selecciona una terminal del reporte y usa los tres puntos para editar el estatus o ver la bitácora.")
 
-    editor_columns = [
-        "id", "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
-        "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por", "observacion"
-    ]
+    report_cols = ["numero_terminal", "numero_afiliado", "hotel", "area", "departamento", "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por", "observacion"]
+    st.dataframe(filtered[report_cols], use_container_width=True, hide_index=True)
 
-    edited = st.data_editor(
-        filtered[editor_columns],
-        use_container_width=True,
-        hide_index=True,
-        num_rows="fixed",
-        disabled=["id", "numero_terminal", "numero_afiliado", "fecha_asignacion"],
-        column_config={
-            "id": st.column_config.TextColumn("ID"),
-            "numero_terminal": st.column_config.TextColumn("Terminal"),
-            "numero_afiliado": st.column_config.TextColumn("Afiliado"),
-            "hotel": st.column_config.SelectboxColumn("Hotel", options=hoteles),
-            "area": st.column_config.TextColumn("Área"),
-            "departamento": st.column_config.SelectboxColumn("Departamento", options=departamentos),
-            "responsable": st.column_config.TextColumn("Responsable"),
-            "estatus": st.column_config.SelectboxColumn("Estatus", options=estatus_list),
-            "fecha_asignacion": st.column_config.TextColumn("Fecha asignación"),
-            "fecha_cambio": st.column_config.TextColumn("Fecha cambio"),
-            "sustituido_por": st.column_config.TextColumn("Sustituido por"),
-            "observacion": st.column_config.TextColumn("Observación")
-        },
-        key="editor_cambios"
-    )
+    st.divider()
+    c1, c2 = st.columns([2, 1])
+    terminales = filtered["numero_terminal"].tolist()
+    terminal_sel = c1.selectbox("Seleccione terminal", terminales)
+    accion = c2.selectbox("⋮ Acción", ["Ver bitácora", "Editar estatus / ubicación"])
 
-    col_btn1, col_btn2 = st.columns([1, 3])
-    actualizar = col_btn1.button("Actualizar reporte", type="primary", use_container_width=True)
-    recargar = col_btn2.button("Recargar datos", use_container_width=True)
+    row = filtered[filtered["numero_terminal"] == terminal_sel].iloc[0]
 
-    if recargar:
-        st.rerun()
-
-    if actualizar:
-        original = get_inventory()
-        updated = original.copy()
-        cambios = 0
-
-        for _, edited_row in edited.iterrows():
-            row_id = str(edited_row["id"])
-            match = updated[updated["id"] == row_id]
-            if match.empty:
-                continue
-
-            idx = match.index[0]
-            old_row = updated.loc[idx].copy()
-
-            fields_to_check = ["hotel", "area", "departamento", "responsable", "estatus", "fecha_cambio", "sustituido_por", "observacion"]
-            changed_fields = []
-
-            for field in fields_to_check:
-                new_value = str(edited_row.get(field, "")).strip()
-                old_value = str(old_row.get(field, "")).strip()
-                if new_value != old_value:
-                    updated.loc[idx, field] = new_value
-                    changed_fields.append(field)
-
-            if changed_fields:
-                updated.loc[idx, "actualizado_el"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                motivo = "Actualización desde reporte: " + ", ".join(changed_fields)
-                add_history(
-                    terminal_anterior=str(old_row["numero_terminal"]),
-                    terminal_nueva=str(edited_row.get("sustituido_por", "")),
-                    hotel=str(edited_row.get("hotel", "")),
-                    area=str(edited_row.get("area", "")),
-                    departamento=str(edited_row.get("departamento", "")),
-                    estatus_anterior=str(old_row.get("estatus", "")),
-                    estatus_nuevo=str(edited_row.get("estatus", "")),
-                    motivo=motivo,
-                    responsable=str(edited_row.get("responsable", "")),
-                    observacion=str(edited_row.get("observacion", ""))
-                )
-                cambios += 1
-
-        if cambios > 0:
-            save_inventory(updated)
-            st.success(f"Reporte actualizado correctamente. Filas modificadas: {cambios}")
-            st.rerun()
+    if accion == "Ver bitácora":
+        st.markdown("### Bitácora de cambios")
+        hist = get_history()
+        bitacora = hist[
+            (hist["terminal_anterior"] == terminal_sel) |
+            (hist["terminal_nueva"] == terminal_sel)
+        ]
+        if bitacora.empty:
+            st.info("Esta terminal no tiene cambios registrados.")
         else:
-            st.info("No se detectaron cambios para actualizar.")
+            st.dataframe(bitacora.sort_index(ascending=False), use_container_width=True, hide_index=True)
+
+    if accion == "Editar estatus / ubicación":
+        st.markdown("### Editar datafono")
+
+        with st.form("form_editar_terminal"):
+            c1, c2, c3 = st.columns(3)
+            nuevo_hotel = c1.selectbox("Hotel", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
+            nueva_area = c2.text_input("Área", value=row["area"])
+            nuevo_departamento = c3.selectbox("Departamento", departamentos, index=departamentos.index(row["departamento"]) if row["departamento"] in departamentos else 0)
+
+            c4, c5, c6 = st.columns(3)
+            nuevo_responsable = c4.text_input("Responsable", value=row["responsable"])
+            nuevo_estatus = c5.selectbox("Estatus", estatus_list, index=estatus_list.index(row["estatus"]) if row["estatus"] in estatus_list else 0)
+            fecha_cambio = c6.date_input("Fecha cambio", value=date.today())
+
+            c7, c8 = st.columns(2)
+            sustituido_por = c7.text_input("Sustituido por", value=row["sustituido_por"])
+            motivo = c8.text_input("Motivo", value="Actualización de estatus / ubicación")
+
+            observacion = st.text_area("Observación", value=row["observacion"])
+            guardar = st.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
+
+        if guardar:
+            aplicar_actualizacion_terminal(
+                row_id=row["id"],
+                nuevo_hotel=nuevo_hotel,
+                nueva_area=nueva_area,
+                nuevo_departamento=nuevo_departamento,
+                nuevo_responsable=nuevo_responsable,
+                nuevo_estatus=nuevo_estatus,
+                fecha_cambio=fecha_cambio,
+                sustituido_por=sustituido_por,
+                motivo=motivo,
+                observacion=observacion
+            )
+            st.rerun()
 
 
 def historial():
