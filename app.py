@@ -32,7 +32,8 @@ CONFIG_DEFAULT = {
     "Departamentos": ["Recepción", "Spa", "A&B", "Hoyo 10&9", "Golf", "Tenis", "Casino", "Administración", "Auditoría", "Otro"],
     "Estatus": ["Activo", "Resguardo", "En reparación", "Sustituido", "Decomisado", "Baja"],
     "Roles": ["Administrador", "Usuario"],
-    "Activo": ["Sí", "No"]
+    "Activo": ["Sí", "No"],
+    "Areas": ["Operación", "Administración"]
 }
 
 CUSTOM_CSS = """
@@ -82,6 +83,53 @@ CUSTOM_CSS = """
     /* Ocultar botones superiores innecesarios y dejar la vista limpia */
     [data-testid="stToolbar"] > div:not(:last-child) {display: none !important;}
     [data-testid="stDecoration"] {display: none !important;}
+
+    .login-card {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 24px;
+        padding: 28px;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
+        margin-top: 18px;
+    }
+    .login-title {
+        font-size: 1.55rem;
+        font-weight: 800;
+        color: #0F172A;
+        margin-bottom: 4px;
+    }
+    .login-subtitle {
+        color: #64748B;
+        font-size: 0.95rem;
+        margin-bottom: 20px;
+    }
+    .sidebar-title {
+        font-size: 1.2rem;
+        font-weight: 800;
+        color: #0F172A;
+        margin-bottom: 10px;
+    }
+    .sidebar-user-card {
+        background: #F8FAFC;
+        border: 1px solid #E5E7EB;
+        border-radius: 16px;
+        padding: 12px;
+        margin-bottom: 16px;
+    }
+    .sidebar-user-card p {
+        margin: 2px 0;
+        color: #475569;
+        font-size: 0.88rem;
+    }
+    .sidebar-footer {
+        background: #F8FAFC;
+        border: 1px solid #E5E7EB;
+        border-radius: 14px;
+        padding: 10px;
+        color: #475569;
+        font-size: 0.85rem;
+        margin-bottom: 10px;
+    }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -326,20 +374,30 @@ def header():
     """, unsafe_allow_html=True)
 
 
+
 def login():
     st.markdown("""
     <div class="title-card">
         <h1>Control de Datafonos</h1>
-        <p>Acceso seguro al panel de control.</p>
+        <p>Acceso seguro al panel profesional de control, resguardo, cambios y decomisos.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 1.05, 1])
+    col1, col2, col3 = st.columns([1.2, 1, 1.2])
     with col2:
-        st.subheader("Iniciar sesión")
-        usuario = st.text_input("Usuario")
-        clave = st.text_input("Contraseña", type="password")
-        if st.button("Entrar", use_container_width=True):
+        st.markdown("""
+        <div class="login-card">
+            <div class="login-title">Iniciar sesión</div>
+            <div class="login-subtitle">Ingresa tus credenciales para continuar.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.container(border=True):
+            usuario = st.text_input("Usuario", placeholder="Digite su usuario")
+            clave = st.text_input("Contraseña", type="password", placeholder="Digite su contraseña")
+            entrar = st.button("Entrar al sistema", use_container_width=True, type="primary")
+
+        if entrar:
             users = get_users()
             match = users[
                 (users["usuario"] == usuario) &
@@ -353,7 +411,6 @@ def login():
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos.")
-
 
 
 def dashboard():
@@ -484,7 +541,8 @@ def registrar_datafono():
         hotel = c3.selectbox("Hotel *", hoteles, index=None, placeholder="Seleccione hotel")
 
         c4, c5, c6 = st.columns(3)
-        area = c4.text_input("Área *", value="")
+        areas = cfg("Areas")
+        area = c4.selectbox("Área *", areas, index=None, placeholder="Seleccione área")
         departamento = c5.selectbox("Departamento *", departamentos, index=None, placeholder="Seleccione departamento")
         responsable = c6.text_input("Responsable", value="")
 
@@ -657,7 +715,8 @@ def cambios_decomisos():
             with st.form("form_editar_terminal"):
                 c1, c2, c3 = st.columns(3)
                 nuevo_hotel = c1.selectbox("Hotel", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
-                nueva_area = c2.text_input("Área", value=row["area"])
+                areas = cfg("Areas")
+                nueva_area = c2.selectbox("Área", areas, index=areas.index(row["area"]) if row["area"] in areas else None, placeholder="Seleccione área")
                 nuevo_departamento = c3.selectbox("Departamento", departamentos, index=departamentos.index(row["departamento"]) if row["departamento"] in departamentos else 0)
 
                 c4, c5, c6 = st.columns(3)
@@ -798,9 +857,16 @@ def main():
         return
 
     with st.sidebar:
-        st.markdown("## 💳 Control Datafonos")
-        st.caption(f"Usuario: {st.session_state.get('usuario')}")
-        st.caption(f"Rol: {st.session_state.get('rol')}")
+        st.markdown('<div class="sidebar-title">💳 Control Datafonos</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="sidebar-user-card">
+                <p><strong>Usuario:</strong> {st.session_state.get('usuario')}</p>
+                <p><strong>Rol:</strong> {st.session_state.get('rol')}</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         menu = [
             "Dashboard",
@@ -813,10 +879,10 @@ def main():
         if st.session_state.get("rol") == "Administrador":
             menu.append("Usuarios")
 
-        selected = st.radio("Menú", menu)
+        selected = st.radio("Menú principal", menu)
 
         st.divider()
-        st.markdown('<p class="small-note">Base de datos: Google Sheets</p>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-footer">Base de datos conectada:<br><strong>Google Sheets</strong></div>', unsafe_allow_html=True)
         if st.button("Cerrar sesión", use_container_width=True):
             st.session_state.clear()
             st.rerun()
