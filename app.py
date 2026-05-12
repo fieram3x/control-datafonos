@@ -882,7 +882,7 @@ def main():
         selected = st.radio("Menú principal", menu)
 
         st.divider()
-        st.markdown('<div class="sidebar-footer">Base de datos conectada:<br><strong>Google Sheets</strong></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-footer">Base de datos conectada:<br><strong>Team Audit</strong></div>', unsafe_allow_html=True)
         if st.button("Cerrar sesión", use_container_width=True):
             st.session_state.clear()
             st.rerun()
