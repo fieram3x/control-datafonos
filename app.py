@@ -13,10 +13,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-HOTELES = ["MCB", "MPCB", "PPRL", "ZEL", "PGC"]
-DEPARTAMENTOS = ["Recepción", "Spa", "A&B", "Golf", "Casino", "Administración", "Auditoría", "Otro"]
-ESTATUS = ["Activo", "Resguardo", "En reparación", "Sustituido", "Decomisado", "Baja"]
-
 INVENTARIO_COLUMNS = [
     "id", "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
     "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por",
@@ -29,6 +25,14 @@ HISTORIAL_COLUMNS = [
 ]
 
 USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"]
+
+CONFIG_DEFAULT = {
+    "Hoteles": ["5918-MCB", "5917-MPCB", "5910-PPRL", "5911-ZEL", "5930-PGC"],
+    "Departamentos": ["Recepción", "Spa", "A&B", "Hoyo 10&9", "Golf", "Tenis", "Casino", "Administración", "Auditoría", "Otro"],
+    "Estatus": ["Activo", "Resguardo", "En reparación", "Sustituido", "Decomisado", "Baja"],
+    "Roles": ["Administrador", "Usuario"],
+    "Activo": ["Sí", "No"]
+}
 
 CUSTOM_CSS = """
 <style>
@@ -109,11 +113,11 @@ def get_ws(name, columns):
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=name, rows=1000, cols=max(20, len(columns)))
         ws.update([columns])
+
     values = ws.get_all_values()
     if not values:
         ws.update([columns])
     elif values[0] != columns:
-        # Mantiene datos existentes, pero corrige encabezados si faltan columnas
         existing_headers = values[0]
         new_headers = existing_headers[:]
         for col in columns:
@@ -144,6 +148,37 @@ def write_sheet(name, df, columns):
     df = df[columns].fillna("")
     ws.clear()
     ws.update([columns] + df.values.tolist())
+
+
+def read_config():
+    sh = connect_gsheet()
+    try:
+        ws = sh.worksheet("Config")
+        values = ws.get_all_values()
+        if not values:
+            return CONFIG_DEFAULT
+        headers = values[0]
+        config = {}
+        for col_idx, header in enumerate(headers):
+            if not header:
+                continue
+            items = []
+            for row in values[1:]:
+                if col_idx < len(row):
+                    value = str(row[col_idx]).strip()
+                    if value:
+                        items.append(value)
+            config[header.strip()] = items
+        for key, default_values in CONFIG_DEFAULT.items():
+            if key not in config or not config[key]:
+                config[key] = default_values
+        return config
+    except Exception:
+        return CONFIG_DEFAULT
+
+
+def cfg(key):
+    return read_config().get(key, CONFIG_DEFAULT.get(key, []))
 
 
 def get_inventory():
@@ -286,12 +321,15 @@ def inventario():
     st.subheader("Inventario maestro")
 
     df = get_inventory()
+    hoteles = cfg("Hoteles")
+    departamentos = cfg("Departamentos")
+    estatus_list = cfg("Estatus")
 
     with st.expander("Filtros", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
-        f_hotel = c1.multiselect("Hotel", HOTELES)
-        f_depto = c2.multiselect("Departamento", DEPARTAMENTOS)
-        f_estatus = c3.multiselect("Estatus", ESTATUS)
+        f_hotel = c1.multiselect("Hotel", hoteles)
+        f_depto = c2.multiselect("Departamento", departamentos)
+        f_estatus = c3.multiselect("Estatus", estatus_list)
         busqueda = c4.text_input("Buscar")
 
     filtered = df.copy()
@@ -306,6 +344,7 @@ def inventario():
         filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
 
     st.dataframe(filtered, use_container_width=True, hide_index=True)
+
     st.download_button(
         "Descargar inventario CSV",
         filtered.to_csv(index=False).encode("utf-8"),
@@ -319,19 +358,23 @@ def registrar_datafono():
     header()
     st.subheader("Registrar nuevo datafono")
 
+    hoteles = cfg("Hoteles")
+    departamentos = cfg("Departamentos")
+    estatus_list = cfg("Estatus")
+
     with st.form("form_registro", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         numero_terminal = c1.text_input("Número Terminal *")
         numero_afiliado = c2.text_input("Número Afiliado *")
-        hotel = c3.selectbox("Hotel *", HOTELES)
+        hotel = c3.selectbox("Hotel *", hoteles)
 
         c4, c5, c6 = st.columns(3)
         area = c4.text_input("Área *")
-        departamento = c5.selectbox("Departamento *", DEPARTAMENTOS)
+        departamento = c5.selectbox("Departamento *", departamentos)
         responsable = c6.text_input("Responsable")
 
         c7, c8 = st.columns(2)
-        estatus = c7.selectbox("Estatus", ESTATUS, index=0)
+        estatus = c7.selectbox("Estatus", estatus_list, index=0)
         fecha_asignacion = c8.date_input("Fecha asignación", value=date.today())
 
         observacion = st.text_area("Observación")
@@ -370,58 +413,122 @@ def registrar_datafono():
         st.success("Datafono registrado correctamente.")
 
 
-def cambiar_estatus():
+def cambios_decomisos():
     header()
-    st.subheader("Cambio, resguardo o decomiso")
+    st.subheader("Reporte de cambios, resguardos y decomisos")
 
     df = get_inventory()
     if df.empty:
         st.info("No hay datafonos registrados.")
         return
 
-    terminales = df["numero_terminal"].tolist()
-    terminal = st.selectbox("Seleccione el terminal", terminales)
-    row = df[df["numero_terminal"] == terminal].iloc[0]
+    hoteles = cfg("Hoteles")
+    departamentos = cfg("Departamentos")
+    estatus_list = cfg("Estatus")
 
-    st.info(f"Terminal: {row['numero_terminal']} | Hotel: {row['hotel']} | Área: {row['area']} | Estatus actual: {row['estatus']}")
+    with st.expander("Filtros del reporte", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        f_hotel = c1.multiselect("Hotel", hoteles, key="rep_hotel")
+        f_depto = c2.multiselect("Departamento", departamentos, key="rep_depto")
+        f_estatus = c3.multiselect("Estatus", estatus_list, key="rep_estatus")
+        busqueda = c4.text_input("Buscar terminal / afiliado / área", key="rep_buscar")
 
-    with st.form("form_cambio"):
-        c1, c2, c3 = st.columns(3)
-        nuevo_estatus = c1.selectbox("Nuevo estatus", ESTATUS, index=ESTATUS.index(row["estatus"]) if row["estatus"] in ESTATUS else 0)
-        terminal_nueva = c2.text_input("Sustituido por / Terminal nueva")
-        fecha_cambio = c3.date_input("Fecha cambio", value=date.today())
+    filtered = df.copy()
+    if f_hotel:
+        filtered = filtered[filtered["hotel"].isin(f_hotel)]
+    if f_depto:
+        filtered = filtered[filtered["departamento"].isin(f_depto)]
+    if f_estatus:
+        filtered = filtered[filtered["estatus"].isin(f_estatus)]
+    if busqueda:
+        b = busqueda.lower()
+        filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
 
-        c4, c5, c6 = st.columns(3)
-        nuevo_hotel = c4.selectbox("Hotel", HOTELES, index=HOTELES.index(row["hotel"]) if row["hotel"] in HOTELES else 0)
-        nueva_area = c5.text_input("Área", value=row["area"])
-        nuevo_departamento = c6.selectbox("Departamento", DEPARTAMENTOS, index=DEPARTAMENTOS.index(row["departamento"]) if row["departamento"] in DEPARTAMENTOS else 0)
+    st.caption("Edita directamente el reporte y luego presiona **Actualizar reporte**. Los cambios quedan guardados en Google Sheets y se registra el historial.")
 
-        responsable = st.text_input("Responsable del movimiento", value=row["responsable"])
-        motivo = st.text_area("Motivo")
-        observacion = st.text_area("Observación adicional")
+    editor_columns = [
+        "id", "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
+        "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por", "observacion"
+    ]
 
-        submitted = st.form_submit_button("Aplicar movimiento", use_container_width=True)
+    edited = st.data_editor(
+        filtered[editor_columns],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=["id", "numero_terminal", "numero_afiliado", "fecha_asignacion"],
+        column_config={
+            "id": st.column_config.TextColumn("ID"),
+            "numero_terminal": st.column_config.TextColumn("Terminal"),
+            "numero_afiliado": st.column_config.TextColumn("Afiliado"),
+            "hotel": st.column_config.SelectboxColumn("Hotel", options=hoteles),
+            "area": st.column_config.TextColumn("Área"),
+            "departamento": st.column_config.SelectboxColumn("Departamento", options=departamentos),
+            "responsable": st.column_config.TextColumn("Responsable"),
+            "estatus": st.column_config.SelectboxColumn("Estatus", options=estatus_list),
+            "fecha_asignacion": st.column_config.TextColumn("Fecha asignación"),
+            "fecha_cambio": st.column_config.TextColumn("Fecha cambio"),
+            "sustituido_por": st.column_config.TextColumn("Sustituido por"),
+            "observacion": st.column_config.TextColumn("Observación")
+        },
+        key="editor_cambios"
+    )
 
-    if submitted:
-        idx = df[df["numero_terminal"] == terminal].index[0]
-        estatus_anterior = df.loc[idx, "estatus"]
+    col_btn1, col_btn2 = st.columns([1, 3])
+    actualizar = col_btn1.button("Actualizar reporte", type="primary", use_container_width=True)
+    recargar = col_btn2.button("Recargar datos", use_container_width=True)
 
-        df.loc[idx, "estatus"] = nuevo_estatus
-        df.loc[idx, "hotel"] = nuevo_hotel
-        df.loc[idx, "area"] = nueva_area
-        df.loc[idx, "departamento"] = nuevo_departamento
-        df.loc[idx, "responsable"] = responsable
-        df.loc[idx, "fecha_cambio"] = str(fecha_cambio)
-        df.loc[idx, "sustituido_por"] = terminal_nueva
-        df.loc[idx, "observacion"] = observacion
-        df.loc[idx, "actualizado_el"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if recargar:
+        st.rerun()
 
-        save_inventory(df)
-        add_history(terminal, terminal_nueva, nuevo_hotel, nueva_area, nuevo_departamento, estatus_anterior, nuevo_estatus, motivo, responsable, observacion)
+    if actualizar:
+        original = get_inventory()
+        updated = original.copy()
+        cambios = 0
 
-        if terminal_nueva:
-            st.warning("Recuerda registrar la terminal nueva si aún no existe en el inventario.")
-        st.success("Movimiento aplicado correctamente.")
+        for _, edited_row in edited.iterrows():
+            row_id = str(edited_row["id"])
+            match = updated[updated["id"] == row_id]
+            if match.empty:
+                continue
+
+            idx = match.index[0]
+            old_row = updated.loc[idx].copy()
+
+            fields_to_check = ["hotel", "area", "departamento", "responsable", "estatus", "fecha_cambio", "sustituido_por", "observacion"]
+            changed_fields = []
+
+            for field in fields_to_check:
+                new_value = str(edited_row.get(field, "")).strip()
+                old_value = str(old_row.get(field, "")).strip()
+                if new_value != old_value:
+                    updated.loc[idx, field] = new_value
+                    changed_fields.append(field)
+
+            if changed_fields:
+                updated.loc[idx, "actualizado_el"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                motivo = "Actualización desde reporte: " + ", ".join(changed_fields)
+                add_history(
+                    terminal_anterior=str(old_row["numero_terminal"]),
+                    terminal_nueva=str(edited_row.get("sustituido_por", "")),
+                    hotel=str(edited_row.get("hotel", "")),
+                    area=str(edited_row.get("area", "")),
+                    departamento=str(edited_row.get("departamento", "")),
+                    estatus_anterior=str(old_row.get("estatus", "")),
+                    estatus_nuevo=str(edited_row.get("estatus", "")),
+                    motivo=motivo,
+                    responsable=str(edited_row.get("responsable", "")),
+                    observacion=str(edited_row.get("observacion", ""))
+                )
+                cambios += 1
+
+        if cambios > 0:
+            save_inventory(updated)
+            st.success(f"Reporte actualizado correctamente. Filas modificadas: {cambios}")
+            st.rerun()
+        else:
+            st.info("No se detectaron cambios para actualizar.")
 
 
 def historial():
@@ -450,6 +557,9 @@ def administrar_usuarios():
         st.error("Solo el administrador puede acceder a esta sección.")
         return
 
+    roles = cfg("Roles")
+    activo_opts = cfg("Activo")
+
     users = get_users()
     st.dataframe(users.drop(columns=["clave"], errors="ignore"), use_container_width=True, hide_index=True)
 
@@ -458,8 +568,8 @@ def administrar_usuarios():
         c1, c2, c3, c4 = st.columns(4)
         usuario = c1.text_input("Usuario")
         clave = c2.text_input("Contraseña", type="password")
-        rol = c3.selectbox("Rol", ["Administrador", "Usuario"])
-        activo = c4.selectbox("Activo", ["Sí", "No"])
+        rol = c3.selectbox("Rol", roles)
+        activo = c4.selectbox("Activo", activo_opts)
         submitted = st.form_submit_button("Crear usuario", use_container_width=True)
 
     if submitted:
@@ -519,7 +629,7 @@ def main():
     elif selected == "Registrar Datafono":
         registrar_datafono()
     elif selected == "Cambios / Decomisos":
-        cambiar_estatus()
+        cambios_decomisos()
     elif selected == "Historial de Cambios":
         historial()
     elif selected == "Usuarios":
