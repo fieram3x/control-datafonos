@@ -412,22 +412,40 @@ def login():
                 st.error("Usuario o contraseña incorrectos.")
 
 
+
 def dashboard():
     header()
     df = get_inventory()
     hist = get_history()
 
-    total = len(df)
-    activos = int((df["estatus"] == "Activo").sum()) if not df.empty else 0
-    resguardo = int((df["estatus"] == "Resguardo").sum()) if not df.empty else 0
-    reparacion = int((df["estatus"] == "En reparación").sum()) if not df.empty else 0
-    decomisados = int((df["estatus"] == "Decomisado").sum()) if not df.empty else 0
-    bajas = int((df["estatus"] == "Baja").sum()) if not df.empty else 0
-    cambios_mes = len(hist[hist["fecha"].astype(str).str.startswith(str(date.today())[:7])]) if not hist.empty else 0
+    hoteles = cfg("Hoteles")
+    departamentos = cfg("Departamentos")
+    estatus_list = cfg("Estatus")
 
     st.markdown("### Panel ejecutivo")
+
+    filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="dash")
+
+    total = len(filtered)
+    activos = int((filtered["estatus"] == "Activo").sum()) if not filtered.empty else 0
+    resguardo = int((filtered["estatus"] == "Resguardo").sum()) if not filtered.empty else 0
+    reparacion = int((filtered["estatus"] == "En reparación").sum()) if not filtered.empty else 0
+    decomisados = int((filtered["estatus"] == "Decomisado").sum()) if not filtered.empty else 0
+    bajas = int((filtered["estatus"] == "Baja").sum()) if not filtered.empty else 0
+
+    terminales_filtradas = filtered["numero_terminal"].astype(str).tolist() if not filtered.empty else []
+    if not hist.empty and terminales_filtradas:
+        hist_filtrado = hist[
+            hist["terminal_anterior"].astype(str).isin(terminales_filtradas) |
+            hist["terminal_nueva"].astype(str).isin(terminales_filtradas)
+        ]
+    else:
+        hist_filtrado = hist.copy() if not hist.empty and filtered.empty and len(df) == 0 else pd.DataFrame(columns=HISTORIAL_COLUMNS)
+
+    cambios_mes = len(hist_filtrado[hist_filtrado["fecha"].astype(str).str.startswith(str(date.today())[:7])]) if not hist_filtrado.empty else 0
+
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Total", total)
+    c1.metric("Total filtrado", total)
     c2.metric("Activos", activos)
     c3.metric("Resguardo", resguardo)
     c4.metric("En reparación", reparacion)
@@ -440,53 +458,68 @@ def dashboard():
     with col_a:
         with st.container(border=True):
             st.subheader("Distribución por hotel")
-            if not df.empty:
-                chart = df.groupby("hotel").size().reset_index(name="Cantidad")
+            if not filtered.empty:
+                chart = filtered.groupby("hotel").size().reset_index(name="Cantidad")
                 st.bar_chart(chart, x="hotel", y="Cantidad", use_container_width=True)
             else:
-                st.info("Aún no hay datafonos registrados.")
+                st.info("No hay datos con los filtros seleccionados.")
 
     with col_b:
         with st.container(border=True):
             st.subheader("Distribución por estatus")
-            if not df.empty:
-                chart = df.groupby("estatus").size().reset_index(name="Cantidad")
+            if not filtered.empty:
+                chart = filtered.groupby("estatus").size().reset_index(name="Cantidad")
                 st.bar_chart(chart, x="estatus", y="Cantidad", use_container_width=True)
             else:
-                st.info("Aún no hay datafonos registrados.")
+                st.info("No hay datos con los filtros seleccionados.")
 
     col_c, col_d = st.columns(2)
     with col_c:
         with st.container(border=True):
             st.subheader("Datafonos por departamento")
-            if not df.empty:
-                dept = df.groupby("departamento").size().reset_index(name="Cantidad")
+            if not filtered.empty:
+                dept = filtered.groupby("departamento").size().reset_index(name="Cantidad")
                 st.dataframe(dept, use_container_width=True, hide_index=True)
             else:
                 st.info("Sin datos.")
 
     with col_d:
         with st.container(border=True):
-            st.subheader("Últimos movimientos")
-            if hist.empty:
-                st.info("No hay movimientos registrados.")
+            st.subheader("Últimos movimientos filtrados")
+            if hist_filtrado.empty:
+                st.info("No hay movimientos relacionados con el filtro actual.")
             else:
-                st.dataframe(hist.tail(8).sort_index(ascending=False), use_container_width=True, hide_index=True)
+                st.dataframe(hist_filtrado.tail(8).sort_index(ascending=False), use_container_width=True, hide_index=True)
 
     st.divider()
-    st.subheader("Exportación general")
-    export_bytes = df_to_excel_bytes({"Inventario": df, "Historial": hist})
+    st.subheader("Detalle filtrado")
+    if filtered.empty:
+        st.info("No hay datafonos para mostrar.")
+    else:
+        columnas = [
+            "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
+            "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por"
+        ]
+        st.dataframe(filtered[columnas], use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Exportación del dashboard")
+
+    export_bytes = df_to_excel_bytes({
+        "Dashboard Filtrado": filtered,
+        "Historial Filtrado": hist_filtrado
+    })
+
     if export_bytes:
         st.download_button(
-            "Descargar reporte completo en Excel",
+            "Descargar dashboard filtrado en Excel",
             data=export_bytes,
-            file_name=f"control_datafonos_{date.today()}.xlsx",
+            file_name=f"dashboard_datafonos_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
     else:
         st.info("Para activar la exportación a Excel, agrega openpyxl al archivo requirements.txt.")
-
 
 
 def inventario():
