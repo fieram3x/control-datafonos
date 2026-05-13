@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 import uuid
+import time
 from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
@@ -164,23 +165,51 @@ def connect_gsheet():
         st.stop()
 
 
+
+def retry_gspread(func, attempts=3, wait=1.5):
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return func()
+        except gspread.exceptions.APIError as e:
+            last_error = e
+            time.sleep(wait * (attempt + 1))
+    raise last_error
+
+
 def get_ws(name, columns):
     sh = connect_gsheet()
-    try:
-        ws = sh.worksheet(name)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=name, rows=1000, cols=max(20, len(columns)))
-        ws.update("A1", [columns])
-    values = ws.get_all_values()
+
+    def open_or_create():
+        try:
+            return sh.worksheet(name)
+        except gspread.WorksheetNotFound:
+            ws_new = sh.add_worksheet(title=name, rows=1000, cols=max(20, len(columns)))
+            ws_new.update("A1", [columns])
+            return ws_new
+
+    ws = retry_gspread(open_or_create)
+
+    def get_values():
+        return ws.get_all_values()
+
+    values = retry_gspread(get_values)
+
     if not values:
-        ws.update("A1", [columns])
+        retry_gspread(lambda: ws.update("A1", [columns]))
+
     return ws
 
 
-def read_sheet(name, columns):
-    """Lectura robusta para evitar errores de get_all_records con encabezados vacíos o duplicados."""
+@st.cache_data(ttl=20, show_spinner=False)
+def read_sheet_cached(name, columns_tuple):
+    columns = list(columns_tuple)
     ws = get_ws(name, columns)
-    values = ws.get_all_values()
+
+    def get_values():
+        return ws.get_all_values()
+
+    values = retry_gspread(get_values)
 
     if not values:
         return pd.DataFrame(columns=columns)
@@ -198,6 +227,7 @@ def read_sheet(name, columns):
     for row in data_rows:
         if not any(str(cell).strip() for cell in row):
             continue
+
         item = {}
         for col in columns:
             pos = header_positions.get(col)
@@ -207,6 +237,10 @@ def read_sheet(name, columns):
     return pd.DataFrame(records, columns=columns).astype(str).fillna("")
 
 
+def read_sheet(name, columns):
+    return read_sheet_cached(name, tuple(columns))
+
+
 def write_sheet(name, df, columns):
     ws = get_ws(name, columns)
     df = df.copy()
@@ -214,24 +248,34 @@ def write_sheet(name, df, columns):
         if col not in df.columns:
             df[col] = ""
     df = df[columns].fillna("")
-    ws.clear()
-    ws.update("A1", [columns] + df.values.tolist())
+
+    def do_write():
+        ws.clear()
+        ws.update("A1", [columns] + df.values.tolist())
+
+    retry_gspread(do_write)
+    read_sheet_cached.clear()
+    read_config_cached.clear()
 
 
-def read_config():
+@st.cache_data(ttl=60, show_spinner=False)
+def read_config_cached():
     sh = connect_gsheet()
     try:
-        ws = sh.worksheet("Config")
-        values = ws.get_all_values()
+        ws = retry_gspread(lambda: sh.worksheet("Config"))
+        values = retry_gspread(lambda: ws.get_all_values())
+
         if not values:
             return CONFIG_DEFAULT
 
         headers = values[0]
         config = {}
+
         for col_idx, header in enumerate(headers):
             key = str(header).strip()
             if not key:
                 continue
+
             items = []
             for row in values[1:]:
                 if col_idx < len(row):
@@ -245,8 +289,13 @@ def read_config():
                 config[key] = default_values
 
         return config
+
     except Exception:
         return CONFIG_DEFAULT
+
+
+def read_config():
+    return read_config_cached()
 
 
 def cfg(key):
