@@ -816,36 +816,186 @@ def administrar_usuarios():
 
     roles = cfg("Roles")
     activo_opts = cfg("Activo")
-
     users = get_users()
-    st.dataframe(users.drop(columns=["clave"], errors="ignore"), use_container_width=True, hide_index=True)
 
-    with st.form("form_user", clear_on_submit=True):
-        st.markdown("### Crear usuario")
-        c1, c2, c3, c4 = st.columns(4)
-        usuario = c1.text_input("Usuario")
-        clave = c2.text_input("Contraseña", type="password")
-        rol = c3.selectbox("Rol", roles)
-        activo = c4.selectbox("Activo", activo_opts)
-        submitted = st.form_submit_button("Crear usuario", use_container_width=True)
+    if "usuario_accion" not in st.session_state:
+        st.session_state["usuario_accion"] = None
+    if "usuario_seleccionado" not in st.session_state:
+        st.session_state["usuario_seleccionado"] = None
 
-    if submitted:
-        if not usuario or not clave:
-            st.error("Debe indicar usuario y contraseña.")
+    st.markdown("### Usuarios registrados")
+    st.caption("Cada usuario tiene su menú de tres puntos para editar, activar/inactivar o cambiar contraseña.")
+
+    if users.empty:
+        st.info("No hay usuarios registrados.")
+    else:
+        for _, row in users.iterrows():
+            usuario_actual = str(row["usuario"])
+
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([1.5, 1.2, 1, 0.35])
+
+                c1.markdown(f"<p class='mini-label'>Usuario</p><p class='mini-value'>{usuario_actual}</p>", unsafe_allow_html=True)
+                c2.markdown(f"<p class='mini-label'>Rol</p><p class='mini-value'>{row['rol']}</p>", unsafe_allow_html=True)
+
+                activo = str(row["activo"])
+                if activo == "Sí":
+                    c3.success("Activo")
+                else:
+                    c3.error("Inactivo")
+
+                with c4.popover("⋮", use_container_width=True):
+                    st.markdown(f"**{usuario_actual}**")
+
+                    if st.button("✏️ Editar usuario", key=f"edit_user_{usuario_actual}", use_container_width=True):
+                        st.session_state["usuario_accion"] = "editar"
+                        st.session_state["usuario_seleccionado"] = usuario_actual
+                        st.rerun()
+
+                    if st.button("🔐 Cambiar contraseña", key=f"pass_user_{usuario_actual}", use_container_width=True):
+                        st.session_state["usuario_accion"] = "clave"
+                        st.session_state["usuario_seleccionado"] = usuario_actual
+                        st.rerun()
+
+                    if st.button("🟢 Activar / 🔴 Inactivar", key=f"status_user_{usuario_actual}", use_container_width=True):
+                        st.session_state["usuario_accion"] = "estatus"
+                        st.session_state["usuario_seleccionado"] = usuario_actual
+                        st.rerun()
+
+    st.divider()
+
+    tab_crear, tab_modificar = st.tabs(["Crear usuario", "Modificar usuario seleccionado"])
+
+    with tab_crear:
+        with st.form("form_user_crear", clear_on_submit=True):
+            st.markdown("### Crear nuevo usuario")
+            c1, c2, c3, c4 = st.columns(4)
+            usuario = c1.text_input("Usuario")
+            clave = c2.text_input("Contraseña", type="password")
+            rol = c3.selectbox("Rol", roles)
+            activo = c4.selectbox("Activo", activo_opts)
+            submitted = st.form_submit_button("Crear usuario", use_container_width=True, type="primary")
+
+        if submitted:
+            if not usuario or not clave:
+                st.error("Debe indicar usuario y contraseña.")
+                return
+
+            if usuario in users["usuario"].values:
+                st.error("Ese usuario ya existe.")
+                return
+
+            new_user = pd.DataFrame([{
+                "usuario": usuario,
+                "clave": clave,
+                "rol": rol,
+                "activo": activo
+            }])
+            users = pd.concat([users, new_user], ignore_index=True)
+            save_users(users)
+            st.success("Usuario creado correctamente.")
+            st.rerun()
+
+    with tab_modificar:
+        seleccionado = st.session_state.get("usuario_seleccionado")
+        accion = st.session_state.get("usuario_accion")
+
+        if not seleccionado:
+            st.info("Selecciona los tres puntos de un usuario para modificarlo.")
             return
-        if usuario in users["usuario"].values:
-            st.error("Ese usuario ya existe.")
-            return
-        new_user = pd.DataFrame([{
-            "usuario": usuario,
-            "clave": clave,
-            "rol": rol,
-            "activo": activo
-        }])
-        users = pd.concat([users, new_user], ignore_index=True)
-        save_users(users)
-        st.success("Usuario creado correctamente.")
 
+        selected_df = users[users["usuario"] == seleccionado]
+
+        if selected_df.empty:
+            st.warning("El usuario seleccionado no existe o fue actualizado.")
+            return
+
+        row = selected_df.iloc[0]
+        st.markdown(f"### Usuario seleccionado: **{seleccionado}**")
+
+        if accion == "editar":
+            with st.form("form_user_editar"):
+                c1, c2, c3 = st.columns(3)
+                nuevo_usuario = c1.text_input("Usuario", value=row["usuario"])
+                nuevo_rol = c2.selectbox("Rol", roles, index=roles.index(row["rol"]) if row["rol"] in roles else 0)
+                nuevo_activo = c3.selectbox("Activo", activo_opts, index=activo_opts.index(row["activo"]) if row["activo"] in activo_opts else 0)
+
+                b1, b2 = st.columns(2)
+                guardar = b1.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
+                cancelar = b2.form_submit_button("Cancelar", use_container_width=True)
+
+            if cancelar:
+                st.session_state["usuario_accion"] = None
+                st.session_state["usuario_seleccionado"] = None
+                st.rerun()
+
+            if guardar:
+                if not nuevo_usuario:
+                    st.error("El usuario no puede quedar vacío.")
+                    return
+
+                if nuevo_usuario != seleccionado and nuevo_usuario in users["usuario"].values:
+                    st.error("Ya existe otro usuario con ese nombre.")
+                    return
+
+                idx = users[users["usuario"] == seleccionado].index[0]
+                users.loc[idx, "usuario"] = nuevo_usuario
+                users.loc[idx, "rol"] = nuevo_rol
+                users.loc[idx, "activo"] = nuevo_activo
+                save_users(users)
+
+                st.session_state["usuario_seleccionado"] = nuevo_usuario
+                st.success("Usuario actualizado correctamente.")
+                st.rerun()
+
+        elif accion == "clave":
+            with st.form("form_user_clave"):
+                nueva_clave = st.text_input("Nueva contraseña", type="password")
+                confirmar_clave = st.text_input("Confirmar contraseña", type="password")
+
+                b1, b2 = st.columns(2)
+                guardar = b1.form_submit_button("Cambiar contraseña", type="primary", use_container_width=True)
+                cancelar = b2.form_submit_button("Cancelar", use_container_width=True)
+
+            if cancelar:
+                st.session_state["usuario_accion"] = None
+                st.session_state["usuario_seleccionado"] = None
+                st.rerun()
+
+            if guardar:
+                if not nueva_clave:
+                    st.error("Debe indicar la nueva contraseña.")
+                    return
+
+                if nueva_clave != confirmar_clave:
+                    st.error("Las contraseñas no coinciden.")
+                    return
+
+                idx = users[users["usuario"] == seleccionado].index[0]
+                users.loc[idx, "clave"] = nueva_clave
+                save_users(users)
+                st.success("Contraseña actualizada correctamente.")
+                st.rerun()
+
+        elif accion == "estatus":
+            estado_actual = row["activo"]
+            nuevo_estado = "No" if estado_actual == "Sí" else "Sí"
+
+            st.warning(f"El usuario **{seleccionado}** está actualmente en estado **{estado_actual}**.")
+            st.write(f"¿Deseas cambiarlo a **{nuevo_estado}**?")
+
+            c1, c2 = st.columns(2)
+            if c1.button("Confirmar cambio de estado", type="primary", use_container_width=True):
+                idx = users[users["usuario"] == seleccionado].index[0]
+                users.loc[idx, "activo"] = nuevo_estado
+                save_users(users)
+                st.success("Estado del usuario actualizado correctamente.")
+                st.rerun()
+
+            if c2.button("Cancelar", use_container_width=True):
+                st.session_state["usuario_accion"] = None
+                st.session_state["usuario_seleccionado"] = None
+                st.rerun()
 
 def main():
     if "logged" not in st.session_state:
