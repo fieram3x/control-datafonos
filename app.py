@@ -95,12 +95,14 @@ CUSTOM_CSS = """
     .pill-default {background:#F1F5F9; color:#334155;}
     .mini-label {font-size:0.75rem; color:#64748B; margin-bottom:0;}
     .mini-value {font-size:0.95rem; color:#0F172A; font-weight:600;}
-    .st-key-sticky_cambios_header {
-        position: sticky;
+    .st-key-sticky_cambios_header,
+    div[data-testid="stVerticalBlock"]:has(.sticky-cambios-marker) {
+        position: sticky !important;
         top: 0;
-        z-index: 50;
-        background: #F7FAFC;
+        z-index: 999;
+        background: #F7FAFC !important;
         padding-bottom: 10px;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
     }
 
     /* Ocultar botones superiores innecesarios y dejar la vista limpia */
@@ -914,6 +916,7 @@ def cambios_decomisos():
     estatus_list = cfg("Estatus")
 
     with st.container(key="sticky_cambios_header"):
+        st.markdown("<span class='sticky-cambios-marker'></span>", unsafe_allow_html=True)
         header()
         st.subheader("Reporte de cambios, resguardos y decomisos")
         filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="rep")
