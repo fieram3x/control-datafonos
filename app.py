@@ -426,7 +426,7 @@ def colored_bar_chart(data, category_col, value_col, color_map, title=None, hori
             text=alt.Text(f"{value_col}:Q", format="d"),
         )
 
-    return (bars + labels).properties(title=title, height=330).configure_view(stroke=None)
+    return (bars + labels).properties(title=title, height=330)
 
 
 def donut_chart(data, category_col, value_col, color_map):
@@ -441,7 +441,7 @@ def donut_chart(data, category_col, value_col, color_map):
             alt.Tooltip(f"{category_col}:N", title=category_col.replace("_", " ").title()),
             alt.Tooltip(f"{value_col}:Q", title=value_col),
         ],
-    ).properties(height=330).configure_view(stroke=None)
+    ).properties(height=330)
 
 
 def df_to_excel_bytes(sheets):
