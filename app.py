@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 from datetime import date, datetime
 import uuid
 import time
@@ -27,6 +28,20 @@ HISTORIAL_COLUMNS = [
 ]
 
 USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"]
+
+DASHBOARD_PALETTE = [
+    "#2563EB", "#16A34A", "#F97316", "#DC2626", "#7C3AED",
+    "#0891B2", "#CA8A04", "#DB2777", "#475569", "#65A30D"
+]
+
+STATUS_COLORS = {
+    "Activo": "#16A34A",
+    "Resguardo": "#2563EB",
+    "En reparaciÃ³n": "#F97316",
+    "Sustituido": "#7C3AED",
+    "Decomisado": "#DC2626",
+    "Baja": "#64748B",
+}
 
 CONFIG_DEFAULT = {
     "Hoteles": ["5918-MCB", "5917-MPCB", "5910-PPRL", "5911-ZEL", "5930-PGC", "6034-GOLF Hoyo 10&9", "6254-TENNIS", "6374-CAISNO"],
@@ -369,6 +384,66 @@ def status_html(status):
     return f'<span class="status-pill {css_class}">{status_clean}</span>'
 
 
+def palette_for(values):
+    values = [str(v) for v in values]
+    return {
+        value: DASHBOARD_PALETTE[idx % len(DASHBOARD_PALETTE)]
+        for idx, value in enumerate(values)
+    }
+
+
+def colored_bar_chart(data, category_col, value_col, color_map, title=None, horizontal=True):
+    base = alt.Chart(data).encode(
+        tooltip=[
+            alt.Tooltip(f"{category_col}:N", title=category_col.replace("_", " ").title()),
+            alt.Tooltip(f"{value_col}:Q", title=value_col),
+        ],
+        color=alt.Color(
+            f"{category_col}:N",
+            scale=alt.Scale(domain=list(color_map.keys()), range=list(color_map.values())),
+            legend=None,
+        ),
+    )
+
+    if horizontal:
+        bars = base.mark_bar(cornerRadiusEnd=6).encode(
+            y=alt.Y(f"{category_col}:N", sort="-x", title=None),
+            x=alt.X(f"{value_col}:Q", title=None, axis=alt.Axis(format="d")),
+        )
+        labels = base.mark_text(align="left", baseline="middle", dx=5, color="#0F172A").encode(
+            y=alt.Y(f"{category_col}:N", sort="-x", title=None),
+            x=alt.X(f"{value_col}:Q", title=None),
+            text=alt.Text(f"{value_col}:Q", format="d"),
+        )
+    else:
+        bars = base.mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
+            x=alt.X(f"{category_col}:N", sort="-y", title=None, axis=alt.Axis(labelAngle=-30)),
+            y=alt.Y(f"{value_col}:Q", title=None, axis=alt.Axis(format="d")),
+        )
+        labels = base.mark_text(dy=-8, color="#0F172A").encode(
+            x=alt.X(f"{category_col}:N", sort="-y", title=None),
+            y=alt.Y(f"{value_col}:Q", title=None),
+            text=alt.Text(f"{value_col}:Q", format="d"),
+        )
+
+    return (bars + labels).properties(title=title, height=330).configure_view(stroke=None)
+
+
+def donut_chart(data, category_col, value_col, color_map):
+    return alt.Chart(data).mark_arc(innerRadius=70, outerRadius=125, cornerRadius=4).encode(
+        theta=alt.Theta(f"{value_col}:Q", stack=True),
+        color=alt.Color(
+            f"{category_col}:N",
+            scale=alt.Scale(domain=list(color_map.keys()), range=list(color_map.values())),
+            legend=alt.Legend(title=None, orient="bottom", columns=2),
+        ),
+        tooltip=[
+            alt.Tooltip(f"{category_col}:N", title=category_col.replace("_", " ").title()),
+            alt.Tooltip(f"{value_col}:Q", title=value_col),
+        ],
+    ).properties(height=330).configure_view(stroke=None)
+
+
 def df_to_excel_bytes(sheets):
     output = BytesIO()
     try:
@@ -508,8 +583,12 @@ def dashboard():
         with st.container(border=True):
             st.subheader("Distribución por hotel")
             if not filtered.empty:
-                chart = filtered.groupby("hotel").size().reset_index(name="Cantidad")
-                st.bar_chart(chart, x="hotel", y="Cantidad", use_container_width=True)
+                chart = filtered.groupby("hotel").size().reset_index(name="Cantidad").sort_values("Cantidad", ascending=False)
+                color_map = palette_for(chart["hotel"].tolist())
+                st.altair_chart(
+                    colored_bar_chart(chart, "hotel", "Cantidad", color_map, horizontal=True),
+                    use_container_width=True
+                )
             else:
                 st.info("No hay datos con los filtros seleccionados.")
 
@@ -517,8 +596,12 @@ def dashboard():
         with st.container(border=True):
             st.subheader("Distribución por estatus")
             if not filtered.empty:
-                chart = filtered.groupby("estatus").size().reset_index(name="Cantidad")
-                st.bar_chart(chart, x="estatus", y="Cantidad", use_container_width=True)
+                chart = filtered.groupby("estatus").size().reset_index(name="Cantidad").sort_values("Cantidad", ascending=False)
+                color_map = {status: STATUS_COLORS.get(status, DASHBOARD_PALETTE[idx % len(DASHBOARD_PALETTE)]) for idx, status in enumerate(chart["estatus"].tolist())}
+                st.altair_chart(
+                    donut_chart(chart, "estatus", "Cantidad", color_map),
+                    use_container_width=True
+                )
             else:
                 st.info("No hay datos con los filtros seleccionados.")
 
@@ -527,8 +610,12 @@ def dashboard():
         with st.container(border=True):
             st.subheader("Datafonos por departamento")
             if not filtered.empty:
-                dept = filtered.groupby("departamento").size().reset_index(name="Cantidad")
-                st.dataframe(dept, use_container_width=True, hide_index=True)
+                dept = filtered.groupby("departamento").size().reset_index(name="Cantidad").sort_values("Cantidad", ascending=False)
+                color_map = palette_for(dept["departamento"].tolist())
+                st.altair_chart(
+                    colored_bar_chart(dept, "departamento", "Cantidad", color_map, horizontal=False),
+                    use_container_width=True
+                )
             else:
                 st.info("Sin datos.")
 
