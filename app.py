@@ -918,18 +918,28 @@ def cambios_decomisos():
         st.warning("No hay resultados con los filtros seleccionados.")
         return
 
+    with st.container(border=True):
+        h1, h2, h3, h4, h5, h6, h7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
+        h1.markdown("<p class='mini-label'><strong>Terminal</strong></p>", unsafe_allow_html=True)
+        h2.markdown("<p class='mini-label'><strong>Afiliado</strong></p>", unsafe_allow_html=True)
+        h3.markdown("<p class='mini-label'><strong>Hotel</strong></p>", unsafe_allow_html=True)
+        h4.markdown("<p class='mini-label'><strong>Area / Depto.</strong></p>", unsafe_allow_html=True)
+        h5.markdown("<p class='mini-label'><strong>Responsable</strong></p>", unsafe_allow_html=True)
+        h6.markdown("<p class='mini-label'><strong>Estatus</strong></p>", unsafe_allow_html=True)
+        h7.markdown("<p class='mini-label'><strong>Accion</strong></p>", unsafe_allow_html=True)
+
     for _, row in filtered.iterrows():
         row_id = str(row["id"])
         terminal = str(row["numero_terminal"])
 
         with st.container(border=True):
             c1, c2, c3, c4, c5, c6, c7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
-            c1.markdown(f"<p class='mini-label'>Terminal</p><p class='mini-value'>{terminal}</p>", unsafe_allow_html=True)
-            c2.markdown(f"<p class='mini-label'>Afiliado</p><p class='mini-value'>{row['numero_afiliado']}</p>", unsafe_allow_html=True)
-            c3.markdown(f"<p class='mini-label'>Hotel</p><p class='mini-value'>{row['hotel']}</p>", unsafe_allow_html=True)
-            c4.markdown(f"<p class='mini-label'>Área / Depto.</p><p class='mini-value'>{row['area']} / {row['departamento']}</p>", unsafe_allow_html=True)
-            c5.markdown(f"<p class='mini-label'>Responsable</p><p class='mini-value'>{row['responsable']}</p>", unsafe_allow_html=True)
-            c6.markdown(f"<p class='mini-label'>Estatus</p>{status_html(row['estatus'])}", unsafe_allow_html=True)
+            c1.markdown(f"<p class='mini-value'>{terminal}</p>", unsafe_allow_html=True)
+            c2.markdown(f"<p class='mini-value'>{row['numero_afiliado']}</p>", unsafe_allow_html=True)
+            c3.markdown(f"<p class='mini-value'>{row['hotel']}</p>", unsafe_allow_html=True)
+            c4.markdown(f"<p class='mini-value'>{row['area']} / {row['departamento']}</p>", unsafe_allow_html=True)
+            c5.markdown(f"<p class='mini-value'>{row['responsable']}</p>", unsafe_allow_html=True)
+            c6.markdown(status_html(row["estatus"]), unsafe_allow_html=True)
 
             with c7.popover("⋮", use_container_width=True):
                 st.markdown(f"**Terminal {terminal}**")
