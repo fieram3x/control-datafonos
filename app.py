@@ -433,11 +433,19 @@ def colored_bar_chart(data, category_col, value_col, color_map, title=None, hori
 
 
 def donut_chart(data, category_col, value_col, color_map):
+    data = data.copy()
+    label_col = f"{category_col}_label"
+    data[label_col] = data[category_col].astype(str) + " (" + data[value_col].astype(int).astype(str) + ")"
+    label_color_map = {
+        f"{category} ({int(data.loc[data[category_col] == category, value_col].iloc[0])})": color
+        for category, color in color_map.items()
+        if not data.loc[data[category_col] == category, value_col].empty
+    }
     return alt.Chart(data).mark_arc(innerRadius=70, outerRadius=125, cornerRadius=4).encode(
         theta=alt.Theta(f"{value_col}:Q", stack=True),
         color=alt.Color(
-            f"{category_col}:N",
-            scale=alt.Scale(domain=list(color_map.keys()), range=list(color_map.values())),
+            f"{label_col}:N",
+            scale=alt.Scale(domain=list(label_color_map.keys()), range=list(label_color_map.values())),
             legend=alt.Legend(title=None, orient="bottom", columns=2),
         ),
         tooltip=[
