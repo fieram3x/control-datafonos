@@ -504,7 +504,6 @@ def header():
     st.markdown("""
     <div class="title-card">
         <h1>Control de Datafonos</h1>
-        <p>Inventario profesional conectado a Google Sheets: terminales, afiliados, áreas, resguardos, cambios y decomisos.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -912,7 +911,6 @@ def cambios_decomisos():
     filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="rep")
 
     st.markdown("### Terminales registradas")
-    st.caption("Cada terminal tiene su menú de tres puntos para editar el estatus o consultar su bitácora en una ventana flotante.")
 
     if filtered.empty:
         st.warning("No hay resultados con los filtros seleccionados.")
