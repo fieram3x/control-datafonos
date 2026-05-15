@@ -517,6 +517,9 @@ def header():
     """, unsafe_allow_html=True)
 
 def login():
+    remembered_user = st.query_params.get("usuario", "")
+    remember_default = bool(remembered_user)
+
     st.markdown("""
     <div class="title-card" style="text-align:center;">
         <div style="font-size:48px;">💳</div>
@@ -535,8 +538,9 @@ def login():
         """, unsafe_allow_html=True)
 
         with st.container(border=True):
-            usuario = st.text_input("Usuario", placeholder="Digite su usuario")
+            usuario = st.text_input("Usuario", value=remembered_user, placeholder="Digite su usuario")
             clave = st.text_input("Contraseña", type="password", placeholder="Digite su contraseña")
+            recordar_usuario = st.checkbox("Recordar usuario en este equipo", value=remember_default)
             entrar = st.button("Entrar al sistema", use_container_width=True, type="primary")
 
         if entrar:
@@ -547,6 +551,10 @@ def login():
                 (users["activo"] == "Sí")
             ]
             if not match.empty:
+                if recordar_usuario:
+                    st.query_params["usuario"] = usuario
+                elif "usuario" in st.query_params:
+                    del st.query_params["usuario"]
                 st.session_state["logged"] = True
                 st.session_state["usuario"] = usuario
                 st.session_state["rol"] = match.iloc[0]["rol"]
