@@ -426,7 +426,10 @@ def colored_bar_chart(data, category_col, value_col, color_map, title=None, hori
             text=alt.Text(f"{value_col}:Q", format="d"),
         )
 
-    return (bars + labels).properties(title=title, height=330)
+    chart = (bars + labels).properties(height=330)
+    if title:
+        chart = chart.properties(title=title)
+    return chart
 
 
 def donut_chart(data, category_col, value_col, color_map):
