@@ -1,5 +1,6 @@
 ﻿
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import altair as alt
 from datetime import date, datetime
@@ -516,6 +517,37 @@ def header():
     </div>
     """, unsafe_allow_html=True)
 
+
+def sync_remembered_user():
+    components.html(
+        """
+        <script>
+        const storageKey = "control_datafonos_usuario";
+        const url = new URL(window.parent.location.href);
+        const params = url.searchParams;
+        const usuario = params.get("usuario");
+        const olvidar = params.get("olvidar_usuario");
+
+        if (olvidar === "1") {
+            window.parent.localStorage.removeItem(storageKey);
+            params.delete("usuario");
+            params.delete("olvidar_usuario");
+            window.parent.history.replaceState({}, "", url.pathname + (params.toString() ? "?" + params.toString() : ""));
+        } else if (usuario) {
+            window.parent.localStorage.setItem(storageKey, usuario);
+        } else {
+            const savedUser = window.parent.localStorage.getItem(storageKey);
+            if (savedUser) {
+                params.set("usuario", savedUser);
+                window.parent.location.search = params.toString();
+            }
+        }
+        </script>
+        """,
+        height=0,
+    )
+
+
 def login():
     remembered_user = st.query_params.get("usuario", "")
     remember_default = bool(remembered_user)
@@ -541,11 +573,15 @@ def login():
             usuario = st.text_input("Usuario", value=remembered_user, placeholder="Digite su usuario")
             clave = st.text_input("Contraseña", type="password", placeholder="Digite su contraseña")
             recordar_usuario = st.checkbox(
-                "Recordar usuario",
+                "Recordar usuario en este equipo",
                 value=remember_default,
-                key="recordar_usuario_login",
-                help="Guarda solo el nombre de usuario en este equipo. No guarda la contraseña."
+                key="recordar_usuario_login"
             )
+            if remembered_user and not recordar_usuario:
+                st.query_params["olvidar_usuario"] = "1"
+                if "usuario" in st.query_params:
+                    del st.query_params["usuario"]
+                st.rerun()
             entrar = st.button("Entrar al sistema", use_container_width=True, type="primary")
 
         if entrar:
@@ -556,10 +592,12 @@ def login():
                 (users["activo"] == "Sí")
             ]
             if not match.empty:
-                if recordar_usuario:
+                if recordar_usuario and usuario:
                     st.query_params["usuario"] = usuario
-                elif "usuario" in st.query_params:
-                    del st.query_params["usuario"]
+                    if "olvidar_usuario" in st.query_params:
+                        del st.query_params["olvidar_usuario"]
+                else:
+                    st.query_params["olvidar_usuario"] = "1"
                 st.session_state["logged"] = True
                 st.session_state["usuario"] = usuario
                 st.session_state["rol"] = match.iloc[0]["rol"]
@@ -1210,6 +1248,8 @@ def administrar_usuarios():
                 st.rerun()
 
 def main():
+    sync_remembered_user()
+
     if "logged" not in st.session_state:
         st.session_state["logged"] = False
 
