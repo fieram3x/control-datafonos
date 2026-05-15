@@ -522,7 +522,6 @@ def login():
     <div class="title-card" style="text-align:center;">
         <div style="font-size:48px;">💳</div>
         <h1>Control de Datafonos</h1>
-        <p>Acceso seguro al panel profesional de control, resguardo, cambios y decomisos.</p>
     </div>
     """, unsafe_allow_html=True)
 
