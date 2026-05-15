@@ -95,6 +95,13 @@ CUSTOM_CSS = """
     .pill-default {background:#F1F5F9; color:#334155;}
     .mini-label {font-size:0.75rem; color:#64748B; margin-bottom:0;}
     .mini-value {font-size:0.95rem; color:#0F172A; font-weight:600;}
+    .st-key-sticky_cambios_header {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: #F7FAFC;
+        padding-bottom: 10px;
+    }
 
     /* Ocultar botones superiores innecesarios y dejar la vista limpia */
     [data-testid="stToolbar"] > div:not(:last-child) {display: none !important;}
@@ -896,11 +903,9 @@ def dialog_bitacora_terminal(row_id):
 
 
 def cambios_decomisos():
-    header()
-    st.subheader("Reporte de cambios, resguardos y decomisos")
-
     df = get_inventory()
     if df.empty:
+        header()
         st.info("No hay datafonos registrados.")
         return
 
@@ -908,23 +913,26 @@ def cambios_decomisos():
     departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
 
-    filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="rep")
+    with st.container(key="sticky_cambios_header"):
+        header()
+        st.subheader("Reporte de cambios, resguardos y decomisos")
+        filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="rep")
+        st.markdown("### Terminales registradas")
 
-    st.markdown("### Terminales registradas")
+        if not filtered.empty:
+            with st.container(border=True):
+                h1, h2, h3, h4, h5, h6, h7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
+                h1.markdown("<p class='mini-label'><strong>Terminal</strong></p>", unsafe_allow_html=True)
+                h2.markdown("<p class='mini-label'><strong>Afiliado</strong></p>", unsafe_allow_html=True)
+                h3.markdown("<p class='mini-label'><strong>Hotel</strong></p>", unsafe_allow_html=True)
+                h4.markdown("<p class='mini-label'><strong>Area / Depto.</strong></p>", unsafe_allow_html=True)
+                h5.markdown("<p class='mini-label'><strong>Responsable</strong></p>", unsafe_allow_html=True)
+                h6.markdown("<p class='mini-label'><strong>Estatus</strong></p>", unsafe_allow_html=True)
+                h7.markdown("<p class='mini-label'><strong>Accion</strong></p>", unsafe_allow_html=True)
 
     if filtered.empty:
         st.warning("No hay resultados con los filtros seleccionados.")
         return
-
-    with st.container(border=True):
-        h1, h2, h3, h4, h5, h6, h7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
-        h1.markdown("<p class='mini-label'><strong>Terminal</strong></p>", unsafe_allow_html=True)
-        h2.markdown("<p class='mini-label'><strong>Afiliado</strong></p>", unsafe_allow_html=True)
-        h3.markdown("<p class='mini-label'><strong>Hotel</strong></p>", unsafe_allow_html=True)
-        h4.markdown("<p class='mini-label'><strong>Area / Depto.</strong></p>", unsafe_allow_html=True)
-        h5.markdown("<p class='mini-label'><strong>Responsable</strong></p>", unsafe_allow_html=True)
-        h6.markdown("<p class='mini-label'><strong>Estatus</strong></p>", unsafe_allow_html=True)
-        h7.markdown("<p class='mini-label'><strong>Accion</strong></p>", unsafe_allow_html=True)
 
     for _, row in filtered.iterrows():
         row_id = str(row["id"])
