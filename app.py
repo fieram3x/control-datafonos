@@ -540,7 +540,12 @@ def login():
         with st.container(border=True):
             usuario = st.text_input("Usuario", value=remembered_user, placeholder="Digite su usuario")
             clave = st.text_input("Contraseña", type="password", placeholder="Digite su contraseña")
-            recordar_usuario = st.checkbox("Recordar usuario en este equipo", value=remember_default)
+            recordar_usuario = st.checkbox(
+                "Recordar usuario",
+                value=remember_default,
+                key="recordar_usuario_login",
+                help="Guarda solo el nombre de usuario en este equipo. No guarda la contraseña."
+            )
             entrar = st.button("Entrar al sistema", use_container_width=True, type="primary")
 
         if entrar:
