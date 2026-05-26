@@ -714,7 +714,7 @@ def login():
         </div>
         """, unsafe_allow_html=True)
 
-        with st.container(border=True):
+        with st.form("form_login", border=True):
             st.text_input("Usuario", placeholder="Digite su usuario", key="login_usuario")
             st.text_input(
                 "Contraseña",
@@ -722,7 +722,7 @@ def login():
                 placeholder="Digite su contraseña",
                 key="login_clave"
             )
-            entrar = st.button("Entrar al sistema", use_container_width=True, type="primary")
+            entrar = st.form_submit_button("Entrar al sistema", use_container_width=True, type="primary")
 
         if st.session_state.get("login_error"):
             st.error(st.session_state["login_error"])
