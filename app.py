@@ -279,7 +279,9 @@ def prepare_sheet_df(df, columns):
     return df[columns].fillna("").astype(str)
 
 
-def get_ws(name, columns):
+@st.cache_resource(show_spinner=False)
+def get_ws_cached(name, columns_tuple):
+    columns = list(columns_tuple)
     sh = connect_gsheet()
 
     def open_or_create():
@@ -297,6 +299,10 @@ def get_ws(name, columns):
         retry_gspread(lambda: ws.update("A1", [columns]))
 
     return ws
+
+
+def get_ws(name, columns):
+    return get_ws_cached(name, tuple(columns))
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -684,11 +690,6 @@ def attempt_login():
     if not verify_password(clave, stored_password):
         st.session_state["login_error"] = "Usuario o contraseña incorrectos."
         return False
-
-    if not is_password_hash(stored_password):
-        updated_user = users.loc[idx].to_dict()
-        updated_user["clave"] = make_password_hash(clave)
-        update_sheet_row("Usuarios", USUARIOS_COLUMNS, "usuario", usuario, updated_user)
 
     st.session_state["logged"] = True
     st.session_state["usuario"] = usuario
