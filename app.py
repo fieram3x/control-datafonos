@@ -1,8 +1,12 @@
-﻿
 import streamlit as st
 import pandas as pd
 import altair as alt
 from datetime import date, datetime
+import base64
+import hashlib
+import hmac
+import os
+import re
 import uuid
 import time
 from io import BytesIO
@@ -28,6 +32,16 @@ HISTORIAL_COLUMNS = [
 ]
 
 USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"]
+PASSWORD_PREFIX = "pbkdf2_sha256"
+SEARCHABLE_INVENTORY_COLUMNS = [
+    "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
+    "responsable", "estatus", "sustituido_por", "observacion"
+]
+SEARCHABLE_HISTORY_COLUMNS = [
+    "fecha", "terminal_anterior", "terminal_nueva", "hotel", "area",
+    "departamento", "estatus_anterior", "estatus_nuevo", "motivo", "responsable",
+    "observacion"
+]
 
 DASHBOARD_PALETTE = [
     "#2563EB", "#16A34A", "#F97316", "#DC2626", "#7C3AED",
@@ -201,6 +215,70 @@ def retry_gspread(func, attempts=3, wait=1.5):
     raise last_error
 
 
+def clear_sheet_cache(name=None, columns=None):
+    if name and columns:
+        try:
+            read_sheet_cached.clear(name, tuple(columns))
+            return
+        except (TypeError, ValueError):
+            pass
+    read_sheet_cached.clear()
+
+
+def normalize_text(value):
+    return str(value or "").strip()
+
+
+def normalize_terminal(value):
+    return re.sub(r"\s+", "", normalize_text(value))
+
+
+def validate_terminal_fields(numero_terminal, numero_afiliado):
+    terminal = normalize_terminal(numero_terminal)
+    afiliado = normalize_terminal(numero_afiliado)
+    if not terminal or not afiliado:
+        return None, None, "Terminal y afiliado son obligatorios."
+    if not re.fullmatch(r"[A-Za-z0-9-]{3,30}", terminal):
+        return None, None, "El número de terminal debe tener 3-30 caracteres alfanuméricos o guiones."
+    if not re.fullmatch(r"[A-Za-z0-9-]{3,30}", afiliado):
+        return None, None, "El número de afiliado debe tener 3-30 caracteres alfanuméricos o guiones."
+    return terminal, afiliado, None
+
+
+def make_password_hash(password):
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200000)
+    salt_b64 = base64.b64encode(salt).decode("ascii")
+    digest_b64 = base64.b64encode(digest).decode("ascii")
+    return f"{PASSWORD_PREFIX}${salt_b64}${digest_b64}"
+
+
+def is_password_hash(value):
+    return normalize_text(value).startswith(f"{PASSWORD_PREFIX}$")
+
+
+def verify_password(password, stored_value):
+    stored = normalize_text(stored_value)
+    if not is_password_hash(stored):
+        return hmac.compare_digest(password, stored)
+    try:
+        _, salt_b64, digest_b64 = stored.split("$", 2)
+        salt = base64.b64decode(salt_b64.encode("ascii"))
+        expected = base64.b64decode(digest_b64.encode("ascii"))
+    except Exception:
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200000)
+    return hmac.compare_digest(actual, expected)
+
+
+def prepare_sheet_df(df, columns):
+    df = df.copy()
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ""
+    return df[columns].fillna("").astype(str)
+
+
 def get_ws(name, columns):
     sh = connect_gsheet()
 
@@ -214,12 +292,8 @@ def get_ws(name, columns):
 
     ws = retry_gspread(open_or_create)
 
-    def get_values():
-        return ws.get_all_values()
-
-    values = retry_gspread(get_values)
-
-    if not values:
+    headers = retry_gspread(lambda: ws.row_values(1))
+    if not headers:
         retry_gspread(lambda: ws.update("A1", [columns]))
 
     return ws
@@ -267,19 +341,54 @@ def read_sheet(name, columns):
 
 def write_sheet(name, df, columns):
     ws = get_ws(name, columns)
-    df = df.copy()
-    for col in columns:
-        if col not in df.columns:
-            df[col] = ""
-    df = df[columns].fillna("")
+    df = prepare_sheet_df(df, columns)
 
     def do_write():
         ws.clear()
         ws.update("A1", [columns] + df.values.tolist())
 
     retry_gspread(do_write)
-    read_sheet_cached.clear()
-    read_config_cached.clear()
+    clear_sheet_cache(name, columns)
+    if name == "Config":
+        read_config_cached.clear()
+
+
+def append_sheet_row(name, row, columns):
+    ws = get_ws(name, columns)
+    values = [normalize_text(row.get(col, "")) for col in columns]
+    retry_gspread(lambda: ws.append_row(values, value_input_option="USER_ENTERED"))
+    clear_sheet_cache(name, columns)
+
+
+def find_sheet_row_number(name, columns, key_col, key_value):
+    ws = get_ws(name, columns)
+    values = retry_gspread(lambda: ws.get_all_values())
+    if not values:
+        return None
+
+    headers = [normalize_text(header) for header in values[0]]
+    try:
+        key_idx = headers.index(key_col)
+    except ValueError:
+        return None
+
+    key_value = normalize_text(key_value)
+    for row_number, row in enumerate(values[1:], start=2):
+        if key_idx < len(row) and normalize_text(row[key_idx]) == key_value:
+            return row_number
+    return None
+
+
+def update_sheet_row(name, columns, key_col, key_value, row_values):
+    ws = get_ws(name, columns)
+    row_number = find_sheet_row_number(name, columns, key_col, key_value)
+    if not row_number:
+        return False
+
+    values = [normalize_text(row_values.get(col, "")) for col in columns]
+    retry_gspread(lambda: ws.update(f"A{row_number}", [values]))
+    clear_sheet_cache(name, columns)
+    return True
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -347,7 +456,7 @@ def get_users():
     if users.empty:
         users = pd.DataFrame([{
             "usuario": "admin",
-            "clave": "admin123",
+            "clave": make_password_hash("admin123"),
             "rol": "Administrador",
             "activo": "Sí"
         }])
@@ -360,7 +469,6 @@ def save_users(df):
 
 
 def add_history(terminal_anterior, terminal_nueva, hotel, area, departamento, estatus_anterior, estatus_nuevo, motivo, responsable, observacion):
-    hist = get_history()
     new_row = {
         "id_movimiento": str(uuid.uuid4())[:8],
         "fecha": str(date.today()),
@@ -375,8 +483,7 @@ def add_history(terminal_anterior, terminal_nueva, hotel, area, departamento, es
         "responsable": responsable,
         "observacion": observacion
     }
-    hist = pd.concat([hist, pd.DataFrame([new_row])], ignore_index=True)
-    save_history(hist)
+    append_sheet_row("Historial", new_row, HISTORIAL_COLUMNS)
 
 
 def status_html(status):
@@ -464,6 +571,7 @@ def donut_chart(data, category_col, value_col, color_map):
     ).properties(height=330)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def df_to_excel_bytes(sheets):
     output = BytesIO()
     try:
@@ -473,6 +581,43 @@ def df_to_excel_bytes(sheets):
         return output.getvalue()
     except ModuleNotFoundError:
         return None
+
+
+def dataframe_signature(df):
+    if df.empty:
+        return (tuple(df.columns), 0, 0)
+    hashed = pd.util.hash_pandas_object(df.astype(str), index=True).sum()
+    return (tuple(df.columns), len(df), int(hashed))
+
+
+def sheets_signature(sheets):
+    return tuple((name, dataframe_signature(df)) for name, df in sheets.items())
+
+
+def render_excel_export(button_label, download_label, sheets, file_name, key):
+    signature = sheets_signature(sheets)
+    signature_key = f"{key}_excel_signature"
+    bytes_key = f"{key}_excel_bytes"
+    if st.session_state.get(signature_key) != signature:
+        st.session_state.pop(bytes_key, None)
+        st.session_state[signature_key] = signature
+
+    if st.button(button_label, key=f"{key}_prepare", use_container_width=True):
+        with st.spinner("Preparando Excel..."):
+            st.session_state[bytes_key] = df_to_excel_bytes(sheets)
+
+    excel_bytes = st.session_state.get(bytes_key)
+    if excel_bytes:
+        st.download_button(
+            download_label,
+            data=excel_bytes,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"{key}_download"
+        )
+    elif excel_bytes is None and bytes_key in st.session_state:
+        st.info("Para activar la exportación a Excel, agrega openpyxl al archivo requirements.txt.")
 
 
 def get_registered_options(df, column):
@@ -504,7 +649,9 @@ def apply_common_filters(df, hoteles, departamentos, estatus_list, prefix=""):
         filtered = filtered[filtered["estatus"].isin(f_estatus)]
     if busqueda:
         b = busqueda.lower()
-        filtered = filtered[filtered.apply(lambda row: b in " ".join(row.astype(str)).lower(), axis=1)]
+        searchable_cols = [col for col in SEARCHABLE_INVENTORY_COLUMNS if col in filtered.columns]
+        searchable_text = filtered[searchable_cols].astype(str).agg(" ".join, axis=1).str.lower()
+        filtered = filtered[searchable_text.str.contains(re.escape(b), na=False)]
 
     return filtered
 
@@ -515,6 +662,39 @@ def header():
         <h1>Control de Datafonos</h1>
     </div>
     """, unsafe_allow_html=True)
+
+
+def attempt_login():
+    usuario = normalize_text(st.session_state.get("login_usuario"))
+    clave = st.session_state.get("login_clave", "")
+    st.session_state.pop("login_error", None)
+
+    if not usuario or not clave:
+        st.session_state["login_error"] = "Digite usuario y contraseña."
+        return False
+
+    users = get_users()
+    match = users[(users["usuario"] == usuario) & (users["activo"] == "Sí")]
+    if match.empty:
+        st.session_state["login_error"] = "Usuario o contraseña incorrectos."
+        return False
+
+    idx = match.index[0]
+    stored_password = match.loc[idx, "clave"]
+    if not verify_password(clave, stored_password):
+        st.session_state["login_error"] = "Usuario o contraseña incorrectos."
+        return False
+
+    if not is_password_hash(stored_password):
+        updated_user = users.loc[idx].to_dict()
+        updated_user["clave"] = make_password_hash(clave)
+        update_sheet_row("Usuarios", USUARIOS_COLUMNS, "usuario", usuario, updated_user)
+
+    st.session_state["logged"] = True
+    st.session_state["usuario"] = usuario
+    st.session_state["rol"] = match.iloc[0]["rol"]
+    st.session_state.pop("login_clave", None)
+    return True
 
 
 def login():
@@ -535,24 +715,20 @@ def login():
         """, unsafe_allow_html=True)
 
         with st.container(border=True):
-            usuario = st.text_input("Usuario", placeholder="Digite su usuario")
-            clave = st.text_input("Contraseña", type="password", placeholder="Digite su contraseña")
+            st.text_input("Usuario", placeholder="Digite su usuario", key="login_usuario")
+            st.text_input(
+                "Contraseña",
+                type="password",
+                placeholder="Digite su contraseña",
+                key="login_clave"
+            )
             entrar = st.button("Entrar al sistema", use_container_width=True, type="primary")
 
-        if entrar:
-            users = get_users()
-            match = users[
-                (users["usuario"] == usuario) &
-                (users["clave"] == clave) &
-                (users["activo"] == "Sí")
-            ]
-            if not match.empty:
-                st.session_state["logged"] = True
-                st.session_state["usuario"] = usuario
-                st.session_state["rol"] = match.iloc[0]["rol"]
-                st.rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos.")
+        if st.session_state.get("login_error"):
+            st.error(st.session_state["login_error"])
+
+        if entrar and attempt_login():
+            st.rerun()
 
 
 
@@ -659,22 +835,16 @@ def dashboard():
 
     st.divider()
     st.subheader("Exportación del dashboard")
-
-    export_bytes = df_to_excel_bytes({
-        "Dashboard Filtrado": filtered,
-        "Historial Filtrado": hist_filtrado
-    })
-
-    if export_bytes:
-        st.download_button(
-            "Descargar dashboard filtrado en Excel",
-            data=export_bytes,
-            file_name=f"dashboard_datafonos_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    else:
-        st.info("Para activar la exportación a Excel, agrega openpyxl al archivo requirements.txt.")
+    render_excel_export(
+        "Preparar Excel del dashboard",
+        "Descargar dashboard filtrado en Excel",
+        {
+            "Dashboard Filtrado": filtered,
+            "Historial Filtrado": hist_filtrado
+        },
+        f"dashboard_datafonos_{date.today()}.xlsx",
+        "dashboard"
+    )
 
 
 def inventario():
@@ -699,17 +869,14 @@ def inventario():
         "text/csv",
         use_container_width=True
     )
-    excel_bytes = df_to_excel_bytes({"Inventario": filtered})
-    if excel_bytes:
-        col2.download_button(
+    with col2:
+        render_excel_export(
+            "Preparar inventario Excel",
             "Descargar inventario Excel",
-            data=excel_bytes,
-            file_name=f"inventario_datafonos_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            {"Inventario": filtered},
+            f"inventario_datafonos_{date.today()}.xlsx",
+            "inventario"
         )
-    else:
-        col2.info("Agrega openpyxl a requirements.txt para exportar Excel.")
 
 
 
@@ -741,12 +908,17 @@ def registrar_datafono():
         submitted = st.form_submit_button("Guardar datafono", use_container_width=True)
 
     if submitted:
-        if not numero_terminal or not numero_afiliado or not hotel or not area or not departamento or not estatus:
+        numero_terminal, numero_afiliado, validation_error = validate_terminal_fields(numero_terminal, numero_afiliado)
+        if validation_error:
+            st.error(validation_error)
+            return
+        if not hotel or not area or not departamento or not estatus:
             st.error("Completa los campos obligatorios.")
             return
 
         df = get_inventory()
-        if numero_terminal in df["numero_terminal"].values:
+        terminales_existentes = df["numero_terminal"].astype(str).map(normalize_terminal) if not df.empty else pd.Series(dtype=str)
+        if numero_terminal in terminales_existentes.values:
             st.error("Ese número de terminal ya existe en el inventario.")
             return
 
@@ -767,8 +939,7 @@ def registrar_datafono():
             "creado_el": now,
             "actualizado_el": now
         }
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        save_inventory(df)
+        append_sheet_row("Inventario", new_row, INVENTARIO_COLUMNS)
         add_history(numero_terminal, "", hotel, area, departamento, "", estatus, "Registro inicial", responsable, observacion)
         st.success("Datafono registrado correctamente.")
 
@@ -783,17 +954,22 @@ def aplicar_actualizacion_terminal(row_id, nuevo_hotel, nueva_area, nuevo_depart
     idx = match.index[0]
     old = df.loc[idx].copy()
 
-    df.loc[idx, "hotel"] = nuevo_hotel
-    df.loc[idx, "area"] = nueva_area
-    df.loc[idx, "departamento"] = nuevo_departamento
-    df.loc[idx, "responsable"] = nuevo_responsable
-    df.loc[idx, "estatus"] = nuevo_estatus
-    df.loc[idx, "fecha_cambio"] = str(fecha_cambio)
-    df.loc[idx, "sustituido_por"] = sustituido_por
-    df.loc[idx, "observacion"] = observacion
-    df.loc[idx, "actualizado_el"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated_row = old.to_dict()
+    updated_row.update({
+        "hotel": nuevo_hotel,
+        "area": nueva_area,
+        "departamento": nuevo_departamento,
+        "responsable": nuevo_responsable,
+        "estatus": nuevo_estatus,
+        "fecha_cambio": str(fecha_cambio),
+        "sustituido_por": sustituido_por,
+        "observacion": observacion,
+        "actualizado_el": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
 
-    save_inventory(df)
+    if not update_sheet_row("Inventario", INVENTARIO_COLUMNS, "id", row_id, updated_row):
+        st.error("No se pudo actualizar la fila en Google Sheets.")
+        return
 
     add_history(
         terminal_anterior=str(old["numero_terminal"]),
@@ -923,6 +1099,15 @@ def cambios_decomisos():
         st.warning("No hay resultados con los filtros seleccionados.")
         return
 
+    total_rows = len(filtered)
+    page_size = st.selectbox("Registros por página", [10, 25, 50, 100], index=1, key="rep_page_size")
+    total_pages = max(1, (total_rows + page_size - 1) // page_size)
+    page = st.number_input("Página", min_value=1, max_value=total_pages, value=1, step=1, key="rep_page")
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_df = filtered.iloc[start:end]
+    st.caption(f"Mostrando {start + 1}-{min(end, total_rows)} de {total_rows} terminales filtradas.")
+
     with st.container(border=True):
         h1, h2, h3, h4, h5, h6, h7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
         h1.markdown("<p class='mini-label'><strong>Terminal</strong></p>", unsafe_allow_html=True)
@@ -934,7 +1119,7 @@ def cambios_decomisos():
         h7.markdown("<p class='mini-label'><strong>Accion</strong></p>", unsafe_allow_html=True)
 
     with st.container(height=390, border=False):
-        for _, row in filtered.iterrows():
+        for _, row in page_df.iterrows():
             row_id = str(row["id"])
             terminal = str(row["numero_terminal"])
 
@@ -992,17 +1177,14 @@ def historial():
             "text/csv",
             use_container_width=True
         )
-        excel_bytes = df_to_excel_bytes({"Historial": filtered})
-        if excel_bytes:
-            c2.download_button(
+        with c2:
+            render_excel_export(
+                "Preparar historial Excel",
                 "Descargar historial Excel",
-                data=excel_bytes,
-                file_name=f"historial_cambios_{date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                {"Historial": filtered},
+                f"historial_cambios_{date.today()}.xlsx",
+                "historial"
             )
-        else:
-            c2.info("Agrega openpyxl a requirements.txt para exportar Excel.")
 
 
 def administrar_usuarios():
@@ -1079,19 +1261,21 @@ def administrar_usuarios():
             if not usuario or not clave:
                 st.error("Debe indicar usuario y contraseña.")
                 return
+            if len(clave) < 8:
+                st.error("La contraseña debe tener al menos 8 caracteres.")
+                return
 
             if usuario in users["usuario"].values:
                 st.error("Ese usuario ya existe.")
                 return
 
-            new_user = pd.DataFrame([{
+            new_user = {
                 "usuario": usuario,
-                "clave": clave,
+                "clave": make_password_hash(clave),
                 "rol": rol,
                 "activo": activo
-            }])
-            users = pd.concat([users, new_user], ignore_index=True)
-            save_users(users)
+            }
+            append_sheet_row("Usuarios", new_user, USUARIOS_COLUMNS)
             st.success("Usuario creado correctamente.")
             st.rerun()
 
@@ -1138,10 +1322,15 @@ def administrar_usuarios():
                     return
 
                 idx = users[users["usuario"] == seleccionado].index[0]
-                users.loc[idx, "usuario"] = nuevo_usuario
-                users.loc[idx, "rol"] = nuevo_rol
-                users.loc[idx, "activo"] = nuevo_activo
-                save_users(users)
+                updated_user = users.loc[idx].to_dict()
+                updated_user.update({
+                    "usuario": nuevo_usuario,
+                    "rol": nuevo_rol,
+                    "activo": nuevo_activo
+                })
+                if not update_sheet_row("Usuarios", USUARIOS_COLUMNS, "usuario", seleccionado, updated_user):
+                    st.error("No se pudo actualizar el usuario en Google Sheets.")
+                    return
 
                 st.session_state["usuario_seleccionado"] = nuevo_usuario
                 st.success("Usuario actualizado correctamente.")
@@ -1165,14 +1354,20 @@ def administrar_usuarios():
                 if not nueva_clave:
                     st.error("Debe indicar la nueva contraseña.")
                     return
+                if len(nueva_clave) < 8:
+                    st.error("La contraseña debe tener al menos 8 caracteres.")
+                    return
 
                 if nueva_clave != confirmar_clave:
                     st.error("Las contraseñas no coinciden.")
                     return
 
                 idx = users[users["usuario"] == seleccionado].index[0]
-                users.loc[idx, "clave"] = nueva_clave
-                save_users(users)
+                updated_user = users.loc[idx].to_dict()
+                updated_user["clave"] = make_password_hash(nueva_clave)
+                if not update_sheet_row("Usuarios", USUARIOS_COLUMNS, "usuario", seleccionado, updated_user):
+                    st.error("No se pudo actualizar la contraseña en Google Sheets.")
+                    return
                 st.success("Contraseña actualizada correctamente.")
                 st.rerun()
 
@@ -1186,8 +1381,11 @@ def administrar_usuarios():
             c1, c2 = st.columns(2)
             if c1.button("Confirmar cambio de estado", type="primary", use_container_width=True):
                 idx = users[users["usuario"] == seleccionado].index[0]
-                users.loc[idx, "activo"] = nuevo_estado
-                save_users(users)
+                updated_user = users.loc[idx].to_dict()
+                updated_user["activo"] = nuevo_estado
+                if not update_sheet_row("Usuarios", USUARIOS_COLUMNS, "usuario", seleccionado, updated_user):
+                    st.error("No se pudo actualizar el estado en Google Sheets.")
+                    return
                 st.success("Estado del usuario actualizado correctamente.")
                 st.rerun()
 
@@ -1231,6 +1429,11 @@ def main():
 
         st.divider()
         st.markdown('<div class="sidebar-footer">Base de datos conectada:<br><strong>Team Audit</strong></div>', unsafe_allow_html=True)
+        if st.button("Refrescar datos", use_container_width=True):
+            read_sheet_cached.clear()
+            read_config_cached.clear()
+            df_to_excel_bytes.clear()
+            st.rerun()
         if st.button("Cerrar sesión", use_container_width=True):
             st.session_state.clear()
             st.rerun()
