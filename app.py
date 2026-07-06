@@ -5,6 +5,7 @@ from datetime import date, datetime
 import base64
 import hashlib
 import hmac
+import html
 import os
 import re
 import uuid
@@ -48,17 +49,32 @@ DASHBOARD_PALETTE = [
     "#0891B2", "#CA8A04", "#DB2777", "#475569", "#65A30D"
 ]
 
+MONTH_NAMES_ES = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
+
 STATUS_COLORS = {
     "Activo": "#16A34A",
     "Resguardo": "#2563EB",
-    "En reparaciÃ³n": "#F97316",
+    "En reparación": "#F97316",
     "Sustituido": "#7C3AED",
     "Decomisado": "#DC2626",
     "Baja": "#64748B",
 }
 
 CONFIG_DEFAULT = {
-    "Hoteles": ["5918-MCB", "5917-MPCB", "5910-PPRL", "5911-ZEL", "5930-PGC", "6034-GOLF Hoyo 10&9", "6254-TENNIS", "6374-CAISNO"],
+    "Hoteles": ["5918-MCB", "5917-MPCB", "5910-PPRL", "5911-ZEL", "5930-PGC", "6034-GOLF Hoyo 10&9", "6254-TENNIS", "6374-CASINO"],
     "Departamentos": ["Recepción", "Spa", "A&B", "Hoyo 10&9", "Golf", "Tenis", "Casino", "Administración", "Auditoría", "Otro"],
     "Estatus": ["Activo", "Resguardo", "En reparación", "Sustituido", "Decomisado", "Baja"],
     "Roles": ["Administrador", "Usuario"],
@@ -199,7 +215,8 @@ def connect_gsheet():
         return client.open_by_key(spreadsheet_id)
     except Exception as e:
         st.error("No fue posible conectar con Google Sheets. Verifica los Secrets y que el Google Sheet esté compartido con el client_email.")
-        st.exception(e)
+        if should_show_debug_errors():
+            st.exception(e)
         st.stop()
 
 
@@ -227,6 +244,51 @@ def clear_sheet_cache(name=None, columns=None):
 
 def normalize_text(value):
     return str(value or "").strip()
+
+
+def escape_html(value):
+    return html.escape(normalize_text(value), quote=True)
+
+
+def get_secret_value(section, key, default=""):
+    try:
+        section_values = st.secrets.get(section, {})
+    except Exception:
+        return default
+
+    if hasattr(section_values, "get"):
+        return section_values.get(key, default)
+    return default
+
+
+def should_show_debug_errors():
+    value = get_secret_value("app", "show_debug_errors", os.getenv("APP_SHOW_DEBUG_ERRORS", ""))
+    return normalize_text(value).lower() in {"1", "true", "yes", "si", "sí"}
+
+
+def get_initial_admin_credentials():
+    usuario = normalize_text(get_secret_value("app", "initial_admin_user", os.getenv("APP_INITIAL_ADMIN_USER", "admin")))
+    clave = str(get_secret_value("app", "initial_admin_password", os.getenv("APP_INITIAL_ADMIN_PASSWORD", "")) or "")
+    return usuario or "admin", clave
+
+
+def format_spanish_date(value):
+    if isinstance(value, datetime):
+        parsed_date = value.date()
+    elif isinstance(value, date):
+        parsed_date = value
+    else:
+        try:
+            parsed_date = date.fromisoformat(normalize_text(value)[:10])
+        except ValueError:
+            parsed_date = date.today()
+    month_name = MONTH_NAMES_ES.get(parsed_date.month, "")
+    return f"{parsed_date.day} de {month_name} de {parsed_date.year}"
+
+
+def normalize_filename_part(value):
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", normalize_text(value))
+    return cleaned.strip("_") or "datafono"
 
 
 def normalize_terminal(value):
@@ -460,9 +522,20 @@ def save_history(df):
 def get_users():
     users = read_sheet("Usuarios", USUARIOS_COLUMNS)
     if users.empty:
+        initial_user, initial_password = get_initial_admin_credentials()
+        if not initial_password:
+            st.error(
+                "No hay usuarios configurados. Define app.initial_admin_password en los Secrets "
+                "para crear el primer administrador."
+            )
+            st.stop()
+        if len(initial_password) < 8:
+            st.error("La contraseña inicial del administrador debe tener al menos 8 caracteres.")
+            st.stop()
+
         users = pd.DataFrame([{
-            "usuario": "admin",
-            "clave": make_password_hash("admin123"),
+            "usuario": initial_user,
+            "clave": make_password_hash(initial_password),
             "rol": "Administrador",
             "activo": "Sí"
         }])
@@ -503,7 +576,21 @@ def status_html(status):
         "Baja": "pill-baja"
     }
     css_class = css_map.get(status_clean, "pill-default")
-    return f'<span class="status-pill {css_class}">{status_clean}</span>'
+    return f'<span class="status-pill {css_class}">{escape_html(status_clean)}</span>'
+
+
+def upgrade_legacy_password_hash(usuario, password, user_row):
+    if is_password_hash(user_row.get("clave", "")):
+        return
+
+    updated_user = user_row.to_dict()
+    updated_user["clave"] = make_password_hash(password)
+    try:
+        update_sheet_row("Usuarios", USUARIOS_COLUMNS, "usuario", usuario, updated_user)
+    except Exception as e:
+        if should_show_debug_errors():
+            st.warning("No se pudo migrar la contraseña heredada a hash.")
+            st.exception(e)
 
 
 def palette_for(values):
@@ -589,6 +676,179 @@ def df_to_excel_bytes(sheets):
         return None
 
 
+def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_responsable, puesto_responsable, observacion_resguardo):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    def cell(value, style):
+        return Paragraph(escape_html(value).replace("\n", "<br/>"), style)
+
+    def row_value(key):
+        return normalize_text(row.get(key, ""))
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=0.65 * inch,
+        leftMargin=0.65 * inch,
+        topMargin=0.65 * inch,
+        bottomMargin=0.65 * inch,
+        title="Carta de Resguardo de Datafono",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="TitleCenter",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=18,
+        spaceAfter=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="MetaRight",
+        parent=styles["Normal"],
+        alignment=TA_RIGHT,
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#334155"),
+    ))
+    styles.add(ParagraphStyle(
+        name="BodyJustify",
+        parent=styles["BodyText"],
+        alignment=TA_JUSTIFY,
+        fontSize=10,
+        leading=14,
+        spaceAfter=8,
+    ))
+    styles.add(ParagraphStyle(
+        name="LabelCell",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#0F172A"),
+    ))
+    styles.add(ParagraphStyle(
+        name="ValueCell",
+        parent=styles["BodyText"],
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#111827"),
+    ))
+    styles.add(ParagraphStyle(
+        name="Signature",
+        parent=styles["BodyText"],
+        alignment=TA_CENTER,
+        fontSize=9,
+        leading=12,
+    ))
+
+    fecha_resguardo = format_spanish_date(date.today())
+    terminal = row_value("numero_terminal")
+    afiliado = row_value("numero_afiliado")
+    hotel = row_value("hotel")
+    area = row_value("area")
+    departamento = row_value("departamento")
+    estatus = row_value("estatus")
+    fecha_asignacion = row_value("fecha_asignacion") or str(date.today())
+    observacion_inventario = row_value("observacion")
+
+    story = [
+        Paragraph("CARTA DE RESGUARDO DE DATAFONO", styles["TitleCenter"]),
+        Paragraph(f"Santo Domingo, {fecha_resguardo}", styles["MetaRight"]),
+        Spacer(1, 12),
+        Paragraph(
+            "Por medio de la presente se deja constancia de la entrega en calidad de resguardo "
+            "del datafono detallado a continuación. La persona responsable declara recibir el "
+            "equipo para uso operativo, comprometiéndose a custodiarlo, utilizarlo de forma "
+            "adecuada y reportar oportunamente cualquier cambio, pérdida, daño o devolución.",
+            styles["BodyJustify"],
+        ),
+        Spacer(1, 8),
+    ]
+
+    details = [
+        [cell("Número de terminal", styles["LabelCell"]), cell(terminal, styles["ValueCell"]),
+         cell("Número de afiliado", styles["LabelCell"]), cell(afiliado, styles["ValueCell"])],
+        [cell("Hotel", styles["LabelCell"]), cell(hotel, styles["ValueCell"]),
+         cell("Área", styles["LabelCell"]), cell(area, styles["ValueCell"])],
+        [cell("Departamento", styles["LabelCell"]), cell(departamento, styles["ValueCell"]),
+         cell("Estatus actual", styles["LabelCell"]), cell(estatus, styles["ValueCell"])],
+        [cell("Fecha de asignación", styles["LabelCell"]), cell(fecha_asignacion, styles["ValueCell"]),
+         cell("Fecha de resguardo", styles["LabelCell"]), cell(fecha_resguardo, styles["ValueCell"])],
+    ]
+    details_table = Table(details, colWidths=[1.45 * inch, 1.85 * inch, 1.35 * inch, 1.85 * inch])
+    details_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F8FAFC")),
+        ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#F8FAFC")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(details_table)
+    story.append(Spacer(1, 14))
+
+    responsible = [
+        [cell("Tipo de documento", styles["LabelCell"]), cell(tipo_documento, styles["ValueCell"]),
+         cell("Documento", styles["LabelCell"]), cell(numero_documento, styles["ValueCell"])],
+        [cell("Responsable", styles["LabelCell"]), cell(nombre_responsable, styles["ValueCell"]),
+         cell("Puesto", styles["LabelCell"]), cell(puesto_responsable, styles["ValueCell"])],
+    ]
+    responsible_table = Table(responsible, colWidths=[1.45 * inch, 1.85 * inch, 1.35 * inch, 1.85 * inch])
+    responsible_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F8FAFC")),
+        ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#F8FAFC")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(responsible_table)
+
+    notes = [value for value in [observacion_inventario, observacion_resguardo] if normalize_text(value)]
+    if notes:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("<b>Observaciones:</b>", styles["BodyText"]))
+        for note in notes:
+            story.append(Paragraph(escape_html(note), styles["BodyJustify"]))
+
+    story.extend([
+        Spacer(1, 28),
+        Paragraph("Firmas", styles["TitleCenter"]),
+        Spacer(1, 22),
+    ])
+
+    signature_table = Table([
+        [
+            Paragraph("__________________________________<br/>Responsable<br/>" + escape_html(nombre_responsable), styles["Signature"]),
+            Paragraph("__________________________________<br/>Entregado por<br/>Nombre y firma", styles["Signature"]),
+        ],
+        [
+            Paragraph("<br/><br/>__________________________________<br/>Auditoría / Administración<br/>Nombre y firma", styles["Signature"]),
+            Paragraph("<br/><br/>__________________________________<br/>Recibido conforme<br/>Fecha y hora", styles["Signature"]),
+        ],
+    ], colWidths=[3.25 * inch, 3.25 * inch], rowHeights=[1.0 * inch, 1.15 * inch])
+    signature_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+    ]))
+    story.append(signature_table)
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def dataframe_signature(df):
     if df.empty:
         return (tuple(df.columns), 0, 0)
@@ -624,6 +884,21 @@ def render_excel_export(button_label, download_label, sheets, file_name, key):
         )
     elif excel_bytes is None and bytes_key in st.session_state:
         st.info("Para activar la exportación a Excel, agrega openpyxl al archivo requirements.txt.")
+
+
+def get_dataframe_selected_rows(event):
+    if event is None:
+        return []
+
+    selection = getattr(event, "selection", None)
+    if selection is None and isinstance(event, dict):
+        selection = event.get("selection", {})
+
+    rows = getattr(selection, "rows", None)
+    if rows is None and isinstance(selection, dict):
+        rows = selection.get("rows", [])
+
+    return list(rows or [])
 
 
 def get_registered_options(df, column):
@@ -691,6 +966,7 @@ def attempt_login():
         st.session_state["login_error"] = "Usuario o contraseña incorrectos."
         return False
 
+    upgrade_legacy_password_hash(usuario, clave, match.loc[idx])
     st.session_state["logged"] = True
     st.session_state["usuario"] = usuario
     st.session_state["rol"] = match.iloc[0]["rol"]
@@ -852,6 +1128,9 @@ def inventario():
     header()
     st.subheader("Inventario maestro")
 
+    with st.expander("Registrar nuevo datafono", expanded=False):
+        render_registro_datafono_form("form_registro_inventario")
+
     df = get_inventory()
     hoteles = cfg("Hoteles")
     departamentos = cfg("Departamentos")
@@ -859,8 +1138,57 @@ def inventario():
 
     filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="inv")
 
-    st.markdown("### Resultado")
-    st.dataframe(filtered, use_container_width=True, hide_index=True)
+    st.markdown("### Datafonos registrados")
+    display_columns = [
+        "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
+        "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por",
+        "observacion"
+    ]
+    display_columns = [col for col in display_columns if col in filtered.columns]
+    filtered_display = filtered.reset_index(drop=True)
+    table_df = filtered_display[display_columns] if display_columns else filtered_display
+
+    selected_row = None
+    if filtered_display.empty:
+        st.info("No hay datafonos para mostrar.")
+    else:
+        table_event = st.dataframe(
+            table_df,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="inventario_maestro_table",
+            column_config={
+                "numero_terminal": st.column_config.TextColumn("Terminal"),
+                "numero_afiliado": st.column_config.TextColumn("Afiliado"),
+                "hotel": st.column_config.TextColumn("Hotel"),
+                "area": st.column_config.TextColumn("Área"),
+                "departamento": st.column_config.TextColumn("Departamento"),
+                "responsable": st.column_config.TextColumn("Responsable"),
+                "estatus": st.column_config.TextColumn("Estatus"),
+                "fecha_asignacion": st.column_config.TextColumn("Fecha asignación"),
+                "fecha_cambio": st.column_config.TextColumn("Fecha cambio"),
+                "sustituido_por": st.column_config.TextColumn("Sustituido por"),
+                "observacion": st.column_config.TextColumn("Observación"),
+            },
+        )
+        selected_rows = get_dataframe_selected_rows(table_event)
+        if selected_rows and selected_rows[0] < len(filtered_display):
+            selected_row = filtered_display.iloc[selected_rows[0]]
+
+    st.markdown("### Acciones")
+    selected_label = normalize_text(selected_row["numero_terminal"]) if selected_row is not None else "Sin selección"
+    st.caption(f"Terminal seleccionada: {selected_label}")
+
+    action_1, action_2, action_3 = st.columns(3)
+    actions_disabled = selected_row is None
+    if action_1.button("Editar / cambiar estatus", use_container_width=True, disabled=actions_disabled):
+        dialog_editar_terminal(str(selected_row["id"]))
+    if action_2.button("Ver bitácora", use_container_width=True, disabled=actions_disabled):
+        dialog_bitacora_terminal(str(selected_row["id"]))
+    if action_3.button("Generar resguardo PDF", use_container_width=True, disabled=actions_disabled, type="primary"):
+        dialog_resguardo_terminal(str(selected_row["id"]))
 
     col1, col2 = st.columns(2)
     col1.download_button(
@@ -881,15 +1209,12 @@ def inventario():
 
 
 
-def registrar_datafono():
-    header()
-    st.subheader("Registrar nuevo datafono")
-
+def render_registro_datafono_form(form_key="form_registro"):
     hoteles = cfg("Hoteles")
     departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
 
-    with st.form("form_registro", clear_on_submit=True):
+    with st.form(form_key, clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         numero_terminal = c1.text_input("Número Terminal *", value="")
         numero_afiliado = c2.text_input("Número Afiliado *", value="")
@@ -943,6 +1268,12 @@ def registrar_datafono():
         append_sheet_row("Inventario", new_row, INVENTARIO_COLUMNS)
         add_history(numero_terminal, "", hotel, area, departamento, "", estatus, "Registro inicial", responsable, observacion)
         st.success("Datafono registrado correctamente.")
+
+
+def registrar_datafono():
+    header()
+    st.subheader("Registrar nuevo datafono")
+    render_registro_datafono_form()
 
 
 def aplicar_actualizacion_terminal(row_id, nuevo_hotel, nueva_area, nuevo_departamento, nuevo_responsable, nuevo_estatus, fecha_cambio, sustituido_por, motivo, observacion):
@@ -1080,6 +1411,83 @@ def dialog_bitacora_terminal(row_id):
     if st.button("Cerrar", use_container_width=True):
         st.rerun()
 
+
+@st.dialog("Generar resguardo PDF", width="large")
+def dialog_resguardo_terminal(row_id):
+    df = get_inventory()
+    selected_df = df[df["id"].astype(str) == str(row_id)]
+    if selected_df.empty:
+        st.warning("La terminal seleccionada ya no existe o fue actualizada.")
+        if st.button("Cerrar", use_container_width=True):
+            st.rerun()
+        return
+
+    row = selected_df.iloc[0]
+    terminal_sel = normalize_text(row["numero_terminal"])
+    key_prefix = f"resguardo_{row_id}"
+    pdf_key = f"{key_prefix}_pdf"
+    filename_key = f"{key_prefix}_filename"
+
+    st.markdown(f"### Resguardo - Terminal {terminal_sel}")
+    st.caption(f"Fecha del resguardo: {format_spanish_date(date.today())}")
+
+    with st.form(f"form_{key_prefix}"):
+        c1, c2 = st.columns(2)
+        tipo_documento = c1.selectbox("Documento", ["Cédula", "Pasaporte"])
+        numero_documento = c2.text_input("Cédula o pasaporte")
+
+        c3, c4 = st.columns(2)
+        nombre_responsable = c3.text_input("Nombre del responsable", value=normalize_text(row["responsable"]))
+        puesto_responsable = c4.text_input("Puesto del responsable")
+
+        observacion_resguardo = st.text_area("Observación del resguardo", value="")
+
+        b1, b2 = st.columns(2)
+        generar = b1.form_submit_button("Generar PDF", type="primary", use_container_width=True)
+        cerrar = b2.form_submit_button("Cerrar", use_container_width=True)
+
+    if cerrar:
+        st.session_state.pop(pdf_key, None)
+        st.session_state.pop(filename_key, None)
+        st.rerun()
+
+    if generar:
+        numero_documento = normalize_text(numero_documento)
+        nombre_responsable = normalize_text(nombre_responsable)
+        puesto_responsable = normalize_text(puesto_responsable)
+
+        if not numero_documento or not nombre_responsable or not puesto_responsable:
+            st.error("Completa documento, nombre y puesto del responsable.")
+            return
+
+        try:
+            pdf_bytes = build_resguardo_pdf_bytes(
+                row=row,
+                tipo_documento=tipo_documento,
+                numero_documento=numero_documento,
+                nombre_responsable=nombre_responsable,
+                puesto_responsable=puesto_responsable,
+                observacion_resguardo=observacion_resguardo,
+            )
+        except ModuleNotFoundError:
+            st.error("Para generar el PDF, agrega reportlab al archivo requirements.txt e instala las dependencias.")
+            return
+
+        st.session_state[pdf_key] = pdf_bytes
+        st.session_state[filename_key] = f"resguardo_{normalize_filename_part(terminal_sel)}_{date.today()}.pdf"
+        st.success("PDF de resguardo generado correctamente.")
+
+    if st.session_state.get(pdf_key):
+        st.download_button(
+            "Descargar PDF de resguardo",
+            data=st.session_state[pdf_key],
+            file_name=st.session_state.get(filename_key, f"resguardo_{date.today()}.pdf"),
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"{key_prefix}_download",
+        )
+
+
 def cambios_decomisos():
     df = get_inventory()
     if df.empty:
@@ -1114,10 +1522,10 @@ def cambios_decomisos():
         h1.markdown("<p class='mini-label'><strong>Terminal</strong></p>", unsafe_allow_html=True)
         h2.markdown("<p class='mini-label'><strong>Afiliado</strong></p>", unsafe_allow_html=True)
         h3.markdown("<p class='mini-label'><strong>Hotel</strong></p>", unsafe_allow_html=True)
-        h4.markdown("<p class='mini-label'><strong>Area / Depto.</strong></p>", unsafe_allow_html=True)
+        h4.markdown("<p class='mini-label'><strong>Área / Depto.</strong></p>", unsafe_allow_html=True)
         h5.markdown("<p class='mini-label'><strong>Responsable</strong></p>", unsafe_allow_html=True)
         h6.markdown("<p class='mini-label'><strong>Estatus</strong></p>", unsafe_allow_html=True)
-        h7.markdown("<p class='mini-label'><strong>Accion</strong></p>", unsafe_allow_html=True)
+        h7.markdown("<p class='mini-label'><strong>Acción</strong></p>", unsafe_allow_html=True)
 
     with st.container(height=390, border=False):
         for _, row in page_df.iterrows():
@@ -1126,18 +1534,18 @@ def cambios_decomisos():
 
             with st.container(border=True):
                 c1, c2, c3, c4, c5, c6, c7 = st.columns([1.1, 1.1, 1.2, 1.2, 1.1, 1.1, 0.4])
-                c1.markdown(f"<p class='mini-value'>{terminal}</p>", unsafe_allow_html=True)
-                c2.markdown(f"<p class='mini-value'>{row['numero_afiliado']}</p>", unsafe_allow_html=True)
-                c3.markdown(f"<p class='mini-value'>{row['hotel']}</p>", unsafe_allow_html=True)
-                c4.markdown(f"<p class='mini-value'>{row['area']} / {row['departamento']}</p>", unsafe_allow_html=True)
-                c5.markdown(f"<p class='mini-value'>{row['responsable']}</p>", unsafe_allow_html=True)
+                c1.markdown(f"<p class='mini-value'>{escape_html(terminal)}</p>", unsafe_allow_html=True)
+                c2.markdown(f"<p class='mini-value'>{escape_html(row['numero_afiliado'])}</p>", unsafe_allow_html=True)
+                c3.markdown(f"<p class='mini-value'>{escape_html(row['hotel'])}</p>", unsafe_allow_html=True)
+                c4.markdown(f"<p class='mini-value'>{escape_html(row['area'])} / {escape_html(row['departamento'])}</p>", unsafe_allow_html=True)
+                c5.markdown(f"<p class='mini-value'>{escape_html(row['responsable'])}</p>", unsafe_allow_html=True)
                 c6.markdown(status_html(row["estatus"]), unsafe_allow_html=True)
 
                 with c7.popover("...", use_container_width=True):
                     st.markdown(f"**Terminal {terminal}**")
                     if st.button("Editar", key=f"edit_{row_id}", use_container_width=True):
                         dialog_editar_terminal(row_id)
-                    if st.button("Bitacora", key=f"hist_{row_id}", use_container_width=True):
+                    if st.button("Bitácora", key=f"hist_{row_id}", use_container_width=True):
                         dialog_bitacora_terminal(row_id)
 
 def historial():
@@ -1159,14 +1567,14 @@ def historial():
         if terminal_buscar:
             b = terminal_buscar.lower()
             filtered = filtered[
-                filtered["terminal_anterior"].str.lower().str.contains(b, na=False) |
-                filtered["terminal_nueva"].str.lower().str.contains(b, na=False)
+                filtered["terminal_anterior"].str.lower().str.contains(re.escape(b), na=False) |
+                filtered["terminal_nueva"].str.lower().str.contains(re.escape(b), na=False)
             ]
         if responsable_buscar:
             b = responsable_buscar.lower()
-            filtered = filtered[filtered["responsable"].str.lower().str.contains(b, na=False)]
+            filtered = filtered[filtered["responsable"].str.lower().str.contains(re.escape(b), na=False)]
         if fecha_buscar:
-            filtered = filtered[filtered["fecha"].astype(str).str.contains(fecha_buscar, na=False)]
+            filtered = filtered[filtered["fecha"].astype(str).str.contains(re.escape(fecha_buscar), na=False)]
 
         st.dataframe(filtered.sort_index(ascending=False), use_container_width=True, hide_index=True)
 
@@ -1217,8 +1625,8 @@ def administrar_usuarios():
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([1.5, 1.2, 1, 0.35])
 
-                c1.markdown(f"<p class='mini-label'>Usuario</p><p class='mini-value'>{usuario_actual}</p>", unsafe_allow_html=True)
-                c2.markdown(f"<p class='mini-label'>Rol</p><p class='mini-value'>{row['rol']}</p>", unsafe_allow_html=True)
+                c1.markdown(f"<p class='mini-label'>Usuario</p><p class='mini-value'>{escape_html(usuario_actual)}</p>", unsafe_allow_html=True)
+                c2.markdown(f"<p class='mini-label'>Rol</p><p class='mini-value'>{escape_html(row['rol'])}</p>", unsafe_allow_html=True)
 
                 activo = str(row["activo"])
                 if activo == "Sí":
@@ -1259,6 +1667,7 @@ def administrar_usuarios():
             submitted = st.form_submit_button("Crear usuario", use_container_width=True, type="primary")
 
         if submitted:
+            usuario = normalize_text(usuario)
             if not usuario or not clave:
                 st.error("Debe indicar usuario y contraseña.")
                 return
@@ -1314,6 +1723,7 @@ def administrar_usuarios():
                 st.rerun()
 
             if guardar:
+                nuevo_usuario = normalize_text(nuevo_usuario)
                 if not nuevo_usuario:
                     st.error("El usuario no puede quedar vacío.")
                     return
@@ -1404,12 +1814,14 @@ def main():
         return
 
     with st.sidebar:
+        session_user = escape_html(st.session_state.get("usuario"))
+        session_role = escape_html(st.session_state.get("rol"))
         st.markdown('<div class="sidebar-title">💳 Control Datafonos</div>', unsafe_allow_html=True)
         st.markdown(
             f"""
             <div class="sidebar-user-card">
-                <p><strong>Usuario:</strong> {st.session_state.get('usuario')}</p>
-                <p><strong>Rol:</strong> {st.session_state.get('rol')}</p>
+                <p><strong>Usuario:</strong> {session_user}</p>
+                <p><strong>Rol:</strong> {session_role}</p>
             </div>
             """,
             unsafe_allow_html=True
@@ -1418,8 +1830,6 @@ def main():
         menu = [
             "Dashboard",
             "Inventario Maestro",
-            "Registrar Datafono",
-            "Cambios / Decomisos",
             "Historial de Cambios"
         ]
 
@@ -1443,10 +1853,6 @@ def main():
         dashboard()
     elif selected == "Inventario Maestro":
         inventario()
-    elif selected == "Registrar Datafono":
-        registrar_datafono()
-    elif selected == "Cambios / Decomisos":
-        cambios_decomisos()
     elif selected == "Historial de Cambios":
         historial()
     elif selected == "Usuarios":
