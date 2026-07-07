@@ -53,7 +53,7 @@ SEARCHABLE_HISTORY_COLUMNS = [
     "observacion"
 ]
 ROW_ACTION_COLUMN = "acciones"
-ROW_ACTION_PLACEHOLDER = "⋯"
+ROW_ACTION_PLACEHOLDER = "⋮"
 ROW_ACTION_TOKEN_COLUMN = "_accion_token"
 ROW_ACTION_LABELS = ["Editar estatus", "Editar datos", "Ver bitácora"]
 
@@ -1169,37 +1169,6 @@ def get_aggrid_event_data(grid_response):
     return event_data if isinstance(event_data, dict) else {}
 
 
-def get_inventory_action_cell_renderer():
-    if JsCode is None:
-        return None
-    return JsCode("""
-        function(params) {
-            const button = document.createElement('span');
-            button.className = 'row-action-trigger';
-            button.setAttribute('title', 'Acciones');
-            button.setAttribute('aria-label', 'Acciones');
-
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('viewBox', '0 0 24 24');
-            svg.setAttribute('width', '16');
-            svg.setAttribute('height', '16');
-            svg.setAttribute('aria-hidden', 'true');
-
-            [5, 12, 19].forEach(function(y) {
-                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                circle.setAttribute('cx', '12');
-                circle.setAttribute('cy', String(y));
-                circle.setAttribute('r', '1.7');
-                circle.setAttribute('fill', 'currentColor');
-                svg.appendChild(circle);
-            });
-
-            button.appendChild(svg);
-            return button;
-        }
-    """)
-
-
 def get_inventory_status_row_class():
     if JsCode is None:
         return None
@@ -1224,8 +1193,8 @@ def get_inventory_action_value_setter():
         return None
     return JsCode("""
         function(params) {
-            params.data[params.colDef.field] = params.newValue;
-            if (params.newValue && params.newValue !== '⋯') {
+            params.data[params.colDef.field] = '⋮';
+            if (params.newValue && params.newValue !== '⋮') {
                 params.data._accion_token = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
             }
             return true;
@@ -1590,20 +1559,15 @@ def inventario():
             "menuTabs": [],
             "editable": True,
             "singleClickEdit": True,
-            "cellEditor": "agRichSelectCellEditor",
-            "cellEditorPopup": True,
+            "cellEditor": "agSelectCellEditor",
+            "cellEditorPopup": False,
             "cellEditorParams": {
                 "values": ROW_ACTION_LABELS,
-                "cellHeight": 36,
-                "allowTyping": False,
-                "filterList": False,
-                "highlightMatch": False,
             },
             "cellStyle": {"textAlign": "center", "fontWeight": "700", "fontSize": "18px", "color": "#334155"},
             "tooltipField": "numero_terminal",
         }
         if JsCode is not None:
-            action_column_options["cellRenderer"] = get_inventory_action_cell_renderer()
             action_column_options["valueSetter"] = get_inventory_action_value_setter()
             action_column_options["onCellClicked"] = get_inventory_action_click_handler()
         gb.configure_column(ROW_ACTION_COLUMN, header_name="", **action_column_options)
@@ -1636,11 +1600,16 @@ def inventario():
             ".ag-cell[col-id='acciones']": {
                 "overflow": "visible !important",
                 "padding": "4px 8px !important",
+                "cursor": "pointer",
+                "font-size": "19px !important",
+                "font-weight": "900 !important",
+                "color": "#334155 !important",
             },
             ".ag-cell[col-id='acciones'] .ag-cell-wrapper": {
                 "justify-content": "center",
+                "width": "100%",
             },
-            ".row-action-trigger": {
+            ".ag-cell[col-id='acciones'] .ag-cell-value": {
                 "display": "inline-flex",
                 "align-items": "center",
                 "justify-content": "center",
@@ -1654,10 +1623,7 @@ def inventario():
                 "line-height": "1",
                 "cursor": "pointer",
             },
-            ".row-action-trigger svg": {
-                "display": "block",
-            },
-            ".row-action-trigger:hover": {
+            ".ag-cell[col-id='acciones']:hover .ag-cell-value": {
                 "background": "#F8FAFC",
                 "border-color": "#94A3B8",
                 "color": "#0F172A",
