@@ -1188,29 +1188,64 @@ def get_inventory_status_row_class():
     """)
 
 
-def get_inventory_action_value_setter():
-    if JsCode is None:
-        return None
-    return JsCode("""
-        function(params) {
-            params.data[params.colDef.field] = '⋮';
-            if (params.newValue && params.newValue !== '⋮') {
-                params.data._accion_token = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
-            }
-            return true;
-        }
-    """)
-
-
 def get_inventory_action_click_handler():
     if JsCode is None:
         return None
     return JsCode("""
         function(params) {
-            params.api.startEditingCell({
-                rowIndex: params.rowIndex,
-                colKey: params.column.getColId()
+            const existing = document.getElementById('inventory-row-action-menu');
+            if (existing) existing.remove();
+
+            const actions = ['Editar estatus', 'Editar datos', 'Ver bitácora'];
+            const menu = document.createElement('div');
+            menu.id = 'inventory-row-action-menu';
+            menu.className = 'inventory-row-action-menu';
+
+            actions.forEach(function(action) {
+                const item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'inventory-row-action-item';
+                item.textContent = action;
+                item.addEventListener('click', function(event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const token = action + '|' + Date.now() + '-' + Math.random().toString(16).slice(2);
+                    params.node.setDataValue('_accion_token', token);
+                    menu.remove();
+                });
+                menu.appendChild(item);
             });
+
+            document.body.appendChild(menu);
+
+            const cell = params.event && params.event.target ? params.event.target.closest('.ag-cell') : null;
+            const rect = cell ? cell.getBoundingClientRect() : { left: 8, bottom: 32 };
+            const menuWidth = 172;
+            const menuHeight = actions.length * 36 + 12;
+            const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+            const top = Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - menuHeight - 8));
+            menu.style.left = left + 'px';
+            menu.style.top = top + 'px';
+
+            const closeMenu = function(event) {
+                if (!menu.contains(event.target)) {
+                    menu.remove();
+                    document.removeEventListener('mousedown', closeMenu, true);
+                    document.removeEventListener('keydown', closeOnEscape, true);
+                }
+            };
+            const closeOnEscape = function(event) {
+                if (event.key === 'Escape') {
+                    menu.remove();
+                    document.removeEventListener('mousedown', closeMenu, true);
+                    document.removeEventListener('keydown', closeOnEscape, true);
+                }
+            };
+
+            setTimeout(function() {
+                document.addEventListener('mousedown', closeMenu, true);
+                document.addEventListener('keydown', closeOnEscape, true);
+            }, 0);
         }
     """)
 
@@ -1231,23 +1266,29 @@ def get_inventory_row_action(grid_response):
         or column_data.get("field")
         or column_data.get("colId")
     )
-    if col_id != ROW_ACTION_COLUMN:
-        return None
-
-    action = normalize_text(event_data.get("newValue") or event_data.get("value"))
-    if action not in ROW_ACTION_LABELS:
-        return None
-
     row_data = event_data.get("data")
     if not isinstance(row_data, dict):
         node = event_data.get("node") if isinstance(event_data.get("node"), dict) else {}
         row_data = node.get("data") if isinstance(node.get("data"), dict) else {}
 
+    action = ""
+    token = ""
+    if col_id == ROW_ACTION_TOKEN_COLUMN:
+        token = normalize_text(event_data.get("newValue") or event_data.get("value") or row_data.get(ROW_ACTION_TOKEN_COLUMN))
+        action = token.split("|", 1)[0]
+    elif col_id == ROW_ACTION_COLUMN:
+        action = normalize_text(event_data.get("newValue") or event_data.get("value"))
+    else:
+        return None
+
+    if action not in ROW_ACTION_LABELS:
+        return None
+
     row_id = normalize_text(row_data.get("id") or event_data.get("id"))
     if not row_id:
         return None
 
-    token = normalize_text(
+    token = token or normalize_text(
         row_data.get(ROW_ACTION_TOKEN_COLUMN)
         or event_data.get("timestamp")
         or event_data.get("eventId")
@@ -1557,18 +1598,11 @@ def inventario():
             "suppressHeaderFilterButton": True,
             "suppressMovable": True,
             "menuTabs": [],
-            "editable": True,
-            "singleClickEdit": True,
-            "cellEditor": "agSelectCellEditor",
-            "cellEditorPopup": False,
-            "cellEditorParams": {
-                "values": ROW_ACTION_LABELS,
-            },
+            "editable": False,
             "cellStyle": {"textAlign": "center", "fontWeight": "700", "fontSize": "18px", "color": "#334155"},
             "tooltipField": "numero_terminal",
         }
         if JsCode is not None:
-            action_column_options["valueSetter"] = get_inventory_action_value_setter()
             action_column_options["onCellClicked"] = get_inventory_action_click_handler()
         gb.configure_column(ROW_ACTION_COLUMN, header_name="", **action_column_options)
         if "id" in table_df.columns:
@@ -1631,6 +1665,33 @@ def inventario():
             ".ag-popup-editor": {
                 "box-shadow": "0 12px 30px rgba(15, 23, 42, 0.18) !important",
                 "border-radius": "8px !important",
+            },
+            ".inventory-row-action-menu": {
+                "position": "fixed",
+                "z-index": "100000",
+                "width": "172px",
+                "padding": "6px",
+                "background": "#FFFFFF",
+                "border": "1px solid #CBD5E1",
+                "border-radius": "8px",
+                "box-shadow": "0 14px 30px rgba(15, 23, 42, 0.20)",
+            },
+            ".inventory-row-action-item": {
+                "display": "block",
+                "width": "100%",
+                "border": "0",
+                "background": "transparent",
+                "border-radius": "6px",
+                "padding": "8px 10px",
+                "text-align": "left",
+                "font-size": "13px",
+                "line-height": "18px",
+                "color": "#0F172A",
+                "cursor": "pointer",
+            },
+            ".inventory-row-action-item:hover": {
+                "background": "#F1F5F9",
+                "color": "#0F172A",
             },
             ".status-activo .ag-cell": {
                 "background-color": "#F0FDF4 !important",
