@@ -1174,7 +1174,47 @@ def get_inventory_action_cell_renderer():
         return None
     return JsCode("""
         function(params) {
-            return '<span class="row-action-trigger" title="Acciones">⋯</span>';
+            const button = document.createElement('span');
+            button.className = 'row-action-trigger';
+            button.setAttribute('title', 'Acciones');
+            button.setAttribute('aria-label', 'Acciones');
+
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('width', '16');
+            svg.setAttribute('height', '16');
+            svg.setAttribute('aria-hidden', 'true');
+
+            [5, 12, 19].forEach(function(y) {
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', '12');
+                circle.setAttribute('cy', String(y));
+                circle.setAttribute('r', '1.7');
+                circle.setAttribute('fill', 'currentColor');
+                svg.appendChild(circle);
+            });
+
+            button.appendChild(svg);
+            return button;
+        }
+    """)
+
+
+def get_inventory_status_row_class():
+    if JsCode is None:
+        return None
+    return JsCode("""
+        function(params) {
+            const rawStatus = String((params.data && params.data.estatus) || '').trim();
+            const status = rawStatus.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();
+
+            if (status === 'activo') return 'status-row status-activo';
+            if (status === 'resguardo') return 'status-row status-resguardo';
+            if (status === 'en reparacion') return 'status-row status-reparacion';
+            if (status === 'sustituido') return 'status-row status-sustituido';
+            if (status === 'decomisado') return 'status-row status-decomisado';
+            if (status === 'baja') return 'status-row status-baja';
+            return 'status-row status-default';
         }
     """)
 
@@ -1544,6 +1584,10 @@ def inventario():
             "sortable": False,
             "resizable": False,
             "suppressMenu": True,
+            "suppressHeaderMenuButton": True,
+            "suppressHeaderFilterButton": True,
+            "suppressMovable": True,
+            "menuTabs": [],
             "editable": True,
             "singleClickEdit": True,
             "cellEditor": "agRichSelectCellEditor",
@@ -1586,10 +1630,12 @@ def inventario():
             suppressMenuHide=True,
             stopEditingWhenCellsLoseFocus=True,
         )
+        if JsCode is not None:
+            gb.configure_grid_options(getRowClass=get_inventory_status_row_class())
         inventory_grid_css = {
             ".ag-cell[col-id='acciones']": {
                 "overflow": "visible !important",
-                "padding": "4px 6px !important",
+                "padding": "4px 8px !important",
             },
             ".ag-cell[col-id='acciones'] .ag-cell-wrapper": {
                 "justify-content": "center",
@@ -1608,13 +1654,74 @@ def inventario():
                 "line-height": "1",
                 "cursor": "pointer",
             },
+            ".row-action-trigger svg": {
+                "display": "block",
+            },
             ".row-action-trigger:hover": {
                 "background": "#F8FAFC",
                 "border-color": "#94A3B8",
+                "color": "#0F172A",
             },
             ".ag-popup-editor": {
                 "box-shadow": "0 12px 30px rgba(15, 23, 42, 0.18) !important",
                 "border-radius": "8px !important",
+            },
+            ".status-activo .ag-cell": {
+                "background-color": "#F0FDF4 !important",
+            },
+            ".status-resguardo .ag-cell": {
+                "background-color": "#EFF6FF !important",
+            },
+            ".status-reparacion .ag-cell": {
+                "background-color": "#FFF7ED !important",
+            },
+            ".status-sustituido .ag-cell": {
+                "background-color": "#FAF5FF !important",
+            },
+            ".status-decomisado .ag-cell": {
+                "background-color": "#FEF2F2 !important",
+            },
+            ".status-baja .ag-cell": {
+                "background-color": "#F1F5F9 !important",
+            },
+            ".status-default .ag-cell": {
+                "background-color": "#FFFFFF !important",
+            },
+            ".status-activo.ag-row-hover .ag-cell": {
+                "background-color": "#DCFCE7 !important",
+            },
+            ".status-resguardo.ag-row-hover .ag-cell": {
+                "background-color": "#DBEAFE !important",
+            },
+            ".status-reparacion.ag-row-hover .ag-cell": {
+                "background-color": "#FFEDD5 !important",
+            },
+            ".status-sustituido.ag-row-hover .ag-cell": {
+                "background-color": "#F3E8FF !important",
+            },
+            ".status-decomisado.ag-row-hover .ag-cell": {
+                "background-color": "#FEE2E2 !important",
+            },
+            ".status-baja.ag-row-hover .ag-cell": {
+                "background-color": "#E2E8F0 !important",
+            },
+            ".status-activo .ag-cell[col-id='acciones']": {
+                "border-left": "4px solid #16A34A !important",
+            },
+            ".status-resguardo .ag-cell[col-id='acciones']": {
+                "border-left": "4px solid #2563EB !important",
+            },
+            ".status-reparacion .ag-cell[col-id='acciones']": {
+                "border-left": "4px solid #F97316 !important",
+            },
+            ".status-sustituido .ag-cell[col-id='acciones']": {
+                "border-left": "4px solid #7C3AED !important",
+            },
+            ".status-decomisado .ag-cell[col-id='acciones']": {
+                "border-left": "4px solid #DC2626 !important",
+            },
+            ".status-baja .ag-cell[col-id='acciones']": {
+                "border-left": "4px solid #64748B !important",
             },
         }
         grid_response = AgGrid(
