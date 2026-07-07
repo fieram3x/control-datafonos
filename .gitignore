@@ -3,6 +3,7 @@ __pycache__/
 .streamlit/secrets.toml
 .env
 .dev.vars
+auditoria-pendientes-*.json
 dist/
 node_modules/
 .wrangler/
