@@ -14,6 +14,14 @@ from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
 
+try:
+    from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
+except ModuleNotFoundError:
+    AgGrid = None
+    DataReturnMode = None
+    GridOptionsBuilder = None
+    GridUpdateMode = None
+
 st.set_page_config(
     page_title="Control de Datafonos",
     page_icon="💳",
@@ -901,6 +909,44 @@ def get_dataframe_selected_rows(event):
     return list(rows or [])
 
 
+def get_aggrid_selected_row_id(grid_response):
+    if not grid_response:
+        return None
+
+    selected_rows = grid_response.get("selected_rows", [])
+    if selected_rows is None:
+        return None
+
+    if isinstance(selected_rows, pd.DataFrame):
+        if selected_rows.empty or "id" not in selected_rows.columns:
+            return None
+        return normalize_text(selected_rows.iloc[0]["id"])
+
+    if isinstance(selected_rows, dict):
+        return normalize_text(selected_rows.get("id"))
+
+    if selected_rows:
+        first_row = selected_rows[0]
+        if isinstance(first_row, dict):
+            return normalize_text(first_row.get("id"))
+
+    return None
+
+
+def get_aggrid_visible_data(grid_response, fallback_df):
+    if not grid_response:
+        return fallback_df.copy()
+
+    data = grid_response.get("data")
+    if data is None:
+        return fallback_df.copy()
+
+    if isinstance(data, pd.DataFrame):
+        return data.copy()
+
+    return pd.DataFrame(data)
+
+
 def get_registered_options(df, column):
     if df.empty or column not in df.columns:
         return []
@@ -1132,11 +1178,6 @@ def inventario():
         render_registro_datafono_form("form_registro_inventario")
 
     df = get_inventory()
-    hoteles = cfg("Hoteles")
-    departamentos = cfg("Departamentos")
-    estatus_list = cfg("Estatus")
-
-    filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="inv")
 
     st.markdown("### Datafonos registrados")
     display_columns = [
@@ -1144,16 +1185,67 @@ def inventario():
         "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por",
         "observacion"
     ]
-    display_columns = [col for col in display_columns if col in filtered.columns]
-    filtered_display = filtered.reset_index(drop=True)
-    table_df = filtered_display[display_columns] if display_columns else filtered_display
+    display_columns = [col for col in display_columns if col in df.columns]
+    inventory_display = df.reset_index(drop=True)
+    table_columns = ["id"] + display_columns if "id" in inventory_display.columns else display_columns
+    table_df = inventory_display[table_columns] if table_columns else inventory_display
+    export_df = table_df.drop(columns=["id"], errors="ignore")
 
     selected_row = None
-    if filtered_display.empty:
+    if inventory_display.empty:
         st.info("No hay datafonos para mostrar.")
-    else:
-        table_event = st.dataframe(
+    elif AgGrid is not None:
+        gb = GridOptionsBuilder.from_dataframe(table_df)
+        gb.configure_default_column(
+            filter=True,
+            floatingFilter=True,
+            sortable=True,
+            resizable=True,
+            minWidth=120,
+        )
+        if "id" in table_df.columns:
+            gb.configure_column("id", hide=True, suppressColumnsToolPanel=True)
+        gb.configure_column("numero_terminal", header_name="Terminal", pinned="left", minWidth=120)
+        gb.configure_column("numero_afiliado", header_name="Afiliado", minWidth=140)
+        gb.configure_column("hotel", header_name="Hotel", minWidth=120)
+        gb.configure_column("area", header_name="Área", minWidth=120)
+        gb.configure_column("departamento", header_name="Departamento", minWidth=140)
+        gb.configure_column("responsable", header_name="Responsable", minWidth=160)
+        gb.configure_column("estatus", header_name="Estatus", minWidth=120)
+        gb.configure_column("fecha_asignacion", header_name="Fecha asignación", minWidth=145)
+        gb.configure_column("fecha_cambio", header_name="Fecha cambio", minWidth=130)
+        gb.configure_column("sustituido_por", header_name="Sustituido por", minWidth=140)
+        gb.configure_column("observacion", header_name="Observación", minWidth=220)
+        gb.configure_selection(selection_mode="single", use_checkbox=True)
+        gb.configure_grid_options(
+            enableCellTextSelection=True,
+            ensureDomOrder=True,
+            rowHeight=34,
+            headerHeight=38,
+            floatingFiltersHeight=34,
+        )
+        grid_response = AgGrid(
             table_df,
+            gridOptions=gb.build(),
+            height=430,
+            fit_columns_on_grid_load=False,
+            update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.FILTERING_CHANGED | GridUpdateMode.SORTING_CHANGED,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            allow_unsafe_jscode=False,
+            theme="streamlit",
+            key="inventario_maestro_grid",
+        )
+        visible_df = get_aggrid_visible_data(grid_response, table_df)
+        export_df = visible_df.drop(columns=["id"], errors="ignore")
+        selected_id = get_aggrid_selected_row_id(grid_response)
+        if selected_id:
+            selected_df = inventory_display[inventory_display["id"].astype(str) == selected_id]
+            if not selected_df.empty:
+                selected_row = selected_df.iloc[0]
+    else:
+        st.info("Instala streamlit-aggrid para activar filtros por columna estilo Excel.")
+        table_event = st.dataframe(
+            export_df,
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
@@ -1174,8 +1266,8 @@ def inventario():
             },
         )
         selected_rows = get_dataframe_selected_rows(table_event)
-        if selected_rows and selected_rows[0] < len(filtered_display):
-            selected_row = filtered_display.iloc[selected_rows[0]]
+        if selected_rows and selected_rows[0] < len(inventory_display):
+            selected_row = inventory_display.iloc[selected_rows[0]]
 
     st.markdown("### Acciones")
     selected_label = normalize_text(selected_row["numero_terminal"]) if selected_row is not None else "Sin selección"
@@ -1193,7 +1285,7 @@ def inventario():
     col1, col2 = st.columns(2)
     col1.download_button(
         "Descargar inventario CSV",
-        filtered.to_csv(index=False).encode("utf-8"),
+        export_df.to_csv(index=False).encode("utf-8"),
         "inventario_datafonos.csv",
         "text/csv",
         use_container_width=True
@@ -1202,7 +1294,7 @@ def inventario():
         render_excel_export(
             "Preparar inventario Excel",
             "Descargar inventario Excel",
-            {"Inventario": filtered},
+            {"Inventario": export_df},
             f"inventario_datafonos_{date.today()}.xlsx",
             "inventario"
         )

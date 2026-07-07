@@ -5,7 +5,7 @@ Aplicación Streamlit para administrar el inventario de datafonos, registrar mov
 ## Funcionalidades
 
 - Dashboard con métricas por estatus, hotel y departamento.
-- Inventario maestro unificado con filtros, tabla, registro de datafonos y exportación CSV/Excel.
+- Inventario maestro unificado con tabla estilo Excel, filtros por columna, registro de datafonos y exportación CSV/Excel.
 - Edición de ubicación, responsable, estatus y bitácora desde la fila seleccionada.
 - Generación de carta de resguardo en PDF para firma del responsable.
 - Historial de cambios con filtros y exportación.
@@ -16,6 +16,7 @@ Aplicación Streamlit para administrar el inventario de datafonos, registrar mov
 - Python 3.11.
 - Acceso a un Google Sheet compartido con el `client_email` de una cuenta de servicio.
 - Dependencias en `requirements.txt`.
+- `streamlit-aggrid` para la tabla de inventario con filtros por columna.
 - `reportlab` para crear los resguardos en PDF.
 
 Instalación local:
