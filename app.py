@@ -15,12 +15,13 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 try:
-    from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
+    from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode, JsCode
 except ModuleNotFoundError:
     AgGrid = None
     DataReturnMode = None
     GridOptionsBuilder = None
     GridUpdateMode = None
+    JsCode = None
 
 st.set_page_config(
     page_title="Control de Datafonos",
@@ -53,6 +54,8 @@ SEARCHABLE_HISTORY_COLUMNS = [
 ]
 ROW_ACTION_COLUMN = "acciones"
 ROW_ACTION_PLACEHOLDER = "⋯"
+ROW_ACTION_TOKEN_COLUMN = "_accion_token"
+ROW_ACTION_LABELS = ["Editar estatus", "Editar datos", "Ver bitácora"]
 
 DASHBOARD_PALETTE = [
     "#2563EB", "#16A34A", "#F97316", "#DC2626", "#7C3AED",
@@ -870,6 +873,188 @@ def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_resp
     return buffer.getvalue()
 
 
+def build_resguardo_filtrado_pdf_bytes(filtered_df, tipo_documento, numero_documento, nombre_responsable, puesto_responsable, observacion_resguardo):
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    def cell(value, style):
+        return Paragraph(escape_html(value).replace("\n", "<br/>") or "&nbsp;", style)
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        rightMargin=0.45 * inch,
+        leftMargin=0.45 * inch,
+        topMargin=0.45 * inch,
+        bottomMargin=0.45 * inch,
+        title="Carta de Resguardo de Datafonos",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="TitleCenterFiltered",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=18,
+        spaceAfter=10,
+    ))
+    styles.add(ParagraphStyle(
+        name="MetaRightFiltered",
+        parent=styles["Normal"],
+        alignment=TA_RIGHT,
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#334155"),
+    ))
+    styles.add(ParagraphStyle(
+        name="BodyJustifyFiltered",
+        parent=styles["BodyText"],
+        alignment=TA_JUSTIFY,
+        fontSize=9,
+        leading=12,
+        spaceAfter=6,
+    ))
+    styles.add(ParagraphStyle(
+        name="LabelCellFiltered",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#0F172A"),
+    ))
+    styles.add(ParagraphStyle(
+        name="ValueCellFiltered",
+        parent=styles["BodyText"],
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#111827"),
+    ))
+    styles.add(ParagraphStyle(
+        name="TableHeaderFiltered",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        alignment=TA_CENTER,
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.white,
+    ))
+    styles.add(ParagraphStyle(
+        name="TableCellFiltered",
+        parent=styles["BodyText"],
+        fontSize=7,
+        leading=8.5,
+        textColor=colors.HexColor("#0F172A"),
+    ))
+    styles.add(ParagraphStyle(
+        name="SignatureFiltered",
+        parent=styles["BodyText"],
+        alignment=TA_CENTER,
+        fontSize=8.5,
+        leading=11,
+    ))
+
+    fecha_resguardo = format_spanish_date(date.today())
+    filtered_df = filtered_df.copy().fillna("")
+
+    story = [
+        Paragraph("CARTA DE RESGUARDO DE DATAFONOS", styles["TitleCenterFiltered"]),
+        Paragraph(f"Santo Domingo, {fecha_resguardo}", styles["MetaRightFiltered"]),
+        Spacer(1, 8),
+        Paragraph(
+            "Por medio de la presente se deja constancia de la entrega en calidad de resguardo "
+            "de los datafonos detallados en este documento. La persona responsable declara recibir "
+            "los equipos para uso operativo, comprometiéndose a custodiarlos, utilizarlos de forma "
+            "adecuada y reportar oportunamente cualquier cambio, pérdida, daño o devolución.",
+            styles["BodyJustifyFiltered"],
+        ),
+        Paragraph(f"<b>Cantidad de datafonos incluidos:</b> {len(filtered_df)}", styles["BodyJustifyFiltered"]),
+        Spacer(1, 8),
+    ]
+
+    responsible = [
+        [cell("Tipo de documento", styles["LabelCellFiltered"]), cell(tipo_documento, styles["ValueCellFiltered"]),
+         cell("Documento", styles["LabelCellFiltered"]), cell(numero_documento, styles["ValueCellFiltered"])],
+        [cell("Responsable", styles["LabelCellFiltered"]), cell(nombre_responsable, styles["ValueCellFiltered"]),
+         cell("Puesto", styles["LabelCellFiltered"]), cell(puesto_responsable, styles["ValueCellFiltered"])],
+        [cell("Fecha de resguardo", styles["LabelCellFiltered"]), cell(fecha_resguardo, styles["ValueCellFiltered"]),
+         cell("Observación", styles["LabelCellFiltered"]), cell(observacion_resguardo, styles["ValueCellFiltered"])],
+    ]
+    responsible_table = Table(responsible, colWidths=[1.35 * inch, 2.25 * inch, 1.15 * inch, 4.1 * inch])
+    responsible_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F8FAFC")),
+        ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#F8FAFC")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(responsible_table)
+    story.append(Spacer(1, 12))
+
+    headers = ["Terminal", "Afiliado", "Hotel", "Área", "Departamento", "Estatus", "Fecha asignación", "Observación"]
+    table_rows = [[Paragraph(header, styles["TableHeaderFiltered"]) for header in headers]]
+    for _, row in filtered_df.iterrows():
+        table_rows.append([
+            cell(row.get("numero_terminal", ""), styles["TableCellFiltered"]),
+            cell(row.get("numero_afiliado", ""), styles["TableCellFiltered"]),
+            cell(row.get("hotel", ""), styles["TableCellFiltered"]),
+            cell(row.get("area", ""), styles["TableCellFiltered"]),
+            cell(row.get("departamento", ""), styles["TableCellFiltered"]),
+            cell(row.get("estatus", ""), styles["TableCellFiltered"]),
+            cell(row.get("fecha_asignacion", ""), styles["TableCellFiltered"]),
+            cell(row.get("observacion", ""), styles["TableCellFiltered"]),
+        ])
+
+    inventory_table = Table(
+        table_rows,
+        repeatRows=1,
+        colWidths=[
+            0.78 * inch, 0.95 * inch, 0.85 * inch, 0.85 * inch,
+            1.05 * inch, 0.8 * inch, 1.05 * inch, 2.15 * inch,
+        ],
+    )
+    inventory_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+    ]))
+    story.append(inventory_table)
+
+    signature_table = Table([
+        [
+            Paragraph("__________________________________<br/>Responsable<br/>" + escape_html(nombre_responsable), styles["SignatureFiltered"]),
+            Paragraph("__________________________________<br/>Entregado por<br/>Nombre y firma", styles["SignatureFiltered"]),
+            Paragraph("__________________________________<br/>Auditoría / Administración<br/>Nombre y firma", styles["SignatureFiltered"]),
+        ],
+    ], colWidths=[3.0 * inch, 3.0 * inch, 3.0 * inch], rowHeights=[0.85 * inch])
+    signature_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+    ]))
+    story.append(KeepTogether([
+        Spacer(1, 22),
+        Paragraph("Firmas", styles["TitleCenterFiltered"]),
+        Spacer(1, 18),
+        signature_table,
+    ]))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def dataframe_signature(df):
     if df.empty:
         return (tuple(df.columns), 0, 0)
@@ -922,11 +1107,28 @@ def get_dataframe_selected_rows(event):
     return list(rows or [])
 
 
+def get_grid_response_value(grid_response, key, default=None):
+    if grid_response is None:
+        return default
+
+    if isinstance(grid_response, dict):
+        return grid_response.get(key, default)
+
+    value = getattr(grid_response, key, None)
+    if value is not None:
+        return value
+
+    try:
+        return grid_response[key]
+    except (KeyError, TypeError, AttributeError):
+        return default
+
+
 def get_aggrid_selected_row_id(grid_response):
-    if not grid_response:
+    if grid_response is None:
         return None
 
-    selected_rows = grid_response.get("selected_rows", [])
+    selected_rows = get_grid_response_value(grid_response, "selected_rows", [])
     if selected_rows is None:
         return None
 
@@ -947,10 +1149,10 @@ def get_aggrid_selected_row_id(grid_response):
 
 
 def get_aggrid_visible_data(grid_response, fallback_df):
-    if not grid_response:
+    if grid_response is None:
         return fallback_df.copy()
 
-    data = grid_response.get("data")
+    data = get_grid_response_value(grid_response, "data")
     if data is None:
         return fallback_df.copy()
 
@@ -960,33 +1162,108 @@ def get_aggrid_visible_data(grid_response, fallback_df):
     return pd.DataFrame(data)
 
 
-def render_inventory_row_actions(selected_row):
-    st.markdown("### Acciones del datafono")
+def get_aggrid_event_data(grid_response):
+    event_data = get_grid_response_value(grid_response, "event_data")
+    if event_data is None:
+        event_data = get_grid_response_value(grid_response, "eventData")
+    return event_data if isinstance(event_data, dict) else {}
 
-    if selected_row is None:
-        st.caption("Selecciona una fila de la tabla para ver las acciones disponibles.")
+
+def get_inventory_action_cell_renderer():
+    if JsCode is None:
+        return None
+    return JsCode("""
+        function(params) {
+            return '<span class="row-action-trigger" title="Acciones">⋯</span>';
+        }
+    """)
+
+
+def get_inventory_action_value_setter():
+    if JsCode is None:
+        return None
+    return JsCode("""
+        function(params) {
+            params.data[params.colDef.field] = params.newValue;
+            if (params.newValue && params.newValue !== '⋯') {
+                params.data._accion_token = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+            }
+            return true;
+        }
+    """)
+
+
+def get_inventory_action_click_handler():
+    if JsCode is None:
+        return None
+    return JsCode("""
+        function(params) {
+            params.api.startEditingCell({
+                rowIndex: params.rowIndex,
+                colKey: params.column.getColId()
+            });
+        }
+    """)
+
+
+def get_inventory_row_action(grid_response):
+    event_data = get_aggrid_event_data(grid_response)
+    if not event_data:
+        return None
+
+    col_def = event_data.get("colDef") if isinstance(event_data.get("colDef"), dict) else {}
+    column_data = event_data.get("column") if isinstance(event_data.get("column"), dict) else {}
+    col_id = (
+        event_data.get("colId")
+        or event_data.get("columnId")
+        or event_data.get("field")
+        or col_def.get("field")
+        or col_def.get("colId")
+        or column_data.get("field")
+        or column_data.get("colId")
+    )
+    if col_id != ROW_ACTION_COLUMN:
+        return None
+
+    action = normalize_text(event_data.get("newValue") or event_data.get("value"))
+    if action not in ROW_ACTION_LABELS:
+        return None
+
+    row_data = event_data.get("data")
+    if not isinstance(row_data, dict):
+        node = event_data.get("node") if isinstance(event_data.get("node"), dict) else {}
+        row_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+
+    row_id = normalize_text(row_data.get("id") or event_data.get("id"))
+    if not row_id:
+        return None
+
+    token = normalize_text(
+        row_data.get(ROW_ACTION_TOKEN_COLUMN)
+        or event_data.get("timestamp")
+        or event_data.get("eventId")
+        or event_data.get("rowIndex")
+    )
+    return {"row_id": row_id, "action": action, "token": token}
+
+
+def dispatch_inventory_row_action(action_event):
+    if not action_event:
         return
 
-    row_id = normalize_text(selected_row.get("id"))
-    terminal = normalize_text(selected_row.get("numero_terminal"))
-    responsable = normalize_text(selected_row.get("responsable"))
-    estatus = normalize_text(selected_row.get("estatus"))
-    summary = f"Terminal {terminal}"
-    if responsable:
-        summary += f" · {responsable}"
-    if estatus:
-        summary += f" · {estatus}"
+    row_id = action_event["row_id"]
+    action = action_event["action"]
+    token = f"{row_id}|{action}|{action_event.get('token')}"
+    if st.session_state.get("inventario_last_row_action") == token:
+        return
+    st.session_state["inventario_last_row_action"] = token
 
-    with st.popover(f"{ROW_ACTION_PLACEHOLDER} {summary}", use_container_width=True):
-        st.caption("Acciones disponibles")
-        if st.button("Editar estatus", key=f"action_status_{row_id}", use_container_width=True):
-            dialog_editar_terminal(row_id)
-        if st.button("Editar datos", key=f"action_data_{row_id}", use_container_width=True):
-            dialog_editar_datos_terminal(row_id)
-        if st.button("Ver bitácora", key=f"action_history_{row_id}", use_container_width=True):
-            dialog_bitacora_terminal(row_id)
-        if st.button("Generar resguardo PDF", key=f"action_pdf_{row_id}", type="primary", use_container_width=True):
-            dialog_resguardo_terminal(row_id)
+    if action == "Editar estatus":
+        dialog_editar_terminal(row_id)
+    elif action == "Editar datos":
+        dialog_editar_datos_terminal(row_id)
+    elif action == "Ver bitácora":
+        dialog_bitacora_terminal(row_id)
 
 
 def get_registered_options(df, column):
@@ -1226,7 +1503,6 @@ def inventario():
     df = get_inventory()
 
     st.markdown("### Datafonos registrados")
-    actions_placeholder = st.empty()
     display_columns = [
         "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
         "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por",
@@ -1238,8 +1514,8 @@ def inventario():
     table_df = (inventory_display[table_columns] if table_columns else inventory_display).copy()
     if not table_df.empty:
         table_df.insert(0, ROW_ACTION_COLUMN, ROW_ACTION_PLACEHOLDER)
-    export_df = table_df.drop(columns=["id", ROW_ACTION_COLUMN], errors="ignore")
-    selected_row = None
+        table_df[ROW_ACTION_TOKEN_COLUMN] = ""
+    export_df = table_df.drop(columns=["id", ROW_ACTION_COLUMN, ROW_ACTION_TOKEN_COLUMN], errors="ignore")
 
     if inventory_display.empty:
         st.info("No hay datafonos para mostrar.")
@@ -1259,22 +1535,38 @@ def inventario():
                 "suppressSelectAll": False,
             },
         )
-        gb.configure_column(
-            ROW_ACTION_COLUMN,
-            header_name="",
-            pinned="left",
-            width=58,
-            minWidth=58,
-            maxWidth=68,
-            filter=False,
-            sortable=False,
-            resizable=False,
-            suppressMenu=True,
-            cellStyle={"textAlign": "center", "fontWeight": "700", "fontSize": "18px", "color": "#334155"},
-            tooltipField="numero_terminal",
-        )
+        action_column_options = {
+            "pinned": "left",
+            "width": 58,
+            "minWidth": 58,
+            "maxWidth": 68,
+            "filter": False,
+            "sortable": False,
+            "resizable": False,
+            "suppressMenu": True,
+            "editable": True,
+            "singleClickEdit": True,
+            "cellEditor": "agRichSelectCellEditor",
+            "cellEditorPopup": True,
+            "cellEditorParams": {
+                "values": ROW_ACTION_LABELS,
+                "cellHeight": 36,
+                "allowTyping": False,
+                "filterList": False,
+                "highlightMatch": False,
+            },
+            "cellStyle": {"textAlign": "center", "fontWeight": "700", "fontSize": "18px", "color": "#334155"},
+            "tooltipField": "numero_terminal",
+        }
+        if JsCode is not None:
+            action_column_options["cellRenderer"] = get_inventory_action_cell_renderer()
+            action_column_options["valueSetter"] = get_inventory_action_value_setter()
+            action_column_options["onCellClicked"] = get_inventory_action_click_handler()
+        gb.configure_column(ROW_ACTION_COLUMN, header_name="", **action_column_options)
         if "id" in table_df.columns:
             gb.configure_column("id", hide=True, suppressColumnsToolPanel=True)
+        if ROW_ACTION_TOKEN_COLUMN in table_df.columns:
+            gb.configure_column(ROW_ACTION_TOKEN_COLUMN, hide=True, suppressColumnsToolPanel=True)
         gb.configure_column("numero_terminal", header_name="Terminal", pinned="left", minWidth=120)
         gb.configure_column("numero_afiliado", header_name="Afiliado", minWidth=140)
         gb.configure_column("hotel", header_name="Hotel", minWidth=120)
@@ -1286,38 +1578,63 @@ def inventario():
         gb.configure_column("fecha_cambio", header_name="Fecha cambio", minWidth=130)
         gb.configure_column("sustituido_por", header_name="Sustituido por", minWidth=140)
         gb.configure_column("observacion", header_name="Observación", minWidth=220)
-        gb.configure_selection(selection_mode="single", use_checkbox=False)
         gb.configure_grid_options(
             enableCellTextSelection=True,
             ensureDomOrder=True,
             rowHeight=34,
             headerHeight=38,
             suppressMenuHide=True,
+            stopEditingWhenCellsLoseFocus=True,
         )
+        inventory_grid_css = {
+            ".ag-cell[col-id='acciones']": {
+                "overflow": "visible !important",
+                "padding": "4px 6px !important",
+            },
+            ".ag-cell[col-id='acciones'] .ag-cell-wrapper": {
+                "justify-content": "center",
+            },
+            ".row-action-trigger": {
+                "display": "inline-flex",
+                "align-items": "center",
+                "justify-content": "center",
+                "width": "30px",
+                "height": "24px",
+                "border": "1px solid #CBD5E1",
+                "border-radius": "6px",
+                "background": "#FFFFFF",
+                "color": "#334155",
+                "font-weight": "800",
+                "line-height": "1",
+                "cursor": "pointer",
+            },
+            ".row-action-trigger:hover": {
+                "background": "#F8FAFC",
+                "border-color": "#94A3B8",
+            },
+            ".ag-popup-editor": {
+                "box-shadow": "0 12px 30px rgba(15, 23, 42, 0.18) !important",
+                "border-radius": "8px !important",
+            },
+        }
         grid_response = AgGrid(
             table_df,
             gridOptions=gb.build(),
             height=430,
             fit_columns_on_grid_load=False,
-            update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.FILTERING_CHANGED | GridUpdateMode.SORTING_CHANGED,
+            update_mode=GridUpdateMode.VALUE_CHANGED | GridUpdateMode.FILTERING_CHANGED | GridUpdateMode.SORTING_CHANGED,
             data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            allow_unsafe_jscode=False,
+            allow_unsafe_jscode=JsCode is not None,
             enable_enterprise_modules=True,
             server_sync_strategy="server_wins",
             theme="streamlit",
+            custom_css=inventory_grid_css,
+            show_download_button=False,
             key="inventario_maestro_grid",
         )
         visible_df = get_aggrid_visible_data(grid_response, table_df)
-        export_df = visible_df.drop(columns=["id", ROW_ACTION_COLUMN], errors="ignore")
-        selected_id = get_aggrid_selected_row_id(grid_response)
-        if selected_id:
-            st.session_state["inventario_selected_row_id"] = selected_id
-
-        stored_selected_id = st.session_state.get("inventario_selected_row_id")
-        if stored_selected_id:
-            selected_df = inventory_display[inventory_display["id"].astype(str) == str(stored_selected_id)]
-            if not selected_df.empty:
-                selected_row = selected_df.iloc[0]
+        export_df = visible_df.drop(columns=["id", ROW_ACTION_COLUMN, ROW_ACTION_TOKEN_COLUMN], errors="ignore")
+        dispatch_inventory_row_action(get_inventory_row_action(grid_response))
     else:
         st.info("Instala streamlit-aggrid para activar filtros por columna estilo Excel.")
         table_event = st.dataframe(
@@ -1343,27 +1660,34 @@ def inventario():
         )
         selected_rows = get_dataframe_selected_rows(table_event)
         if selected_rows and selected_rows[0] < len(inventory_display):
-            selected_row = inventory_display.iloc[selected_rows[0]]
-
-    with actions_placeholder.container():
-        render_inventory_row_actions(selected_row)
+            st.caption("Para editar una fila desde los tres puntos, instala streamlit-aggrid.")
 
     col1, col2 = st.columns(2)
-    col1.download_button(
-        "Descargar inventario CSV",
-        export_df.to_csv(index=False).encode("utf-8"),
-        "inventario_datafonos.csv",
-        "text/csv",
-        use_container_width=True
-    )
+    if col1.button(
+        "Generar resguardo PDF",
+        type="primary",
+        disabled=export_df.empty,
+        use_container_width=True,
+        key="abrir_resguardo_filtrado",
+    ):
+        st.session_state["resguardo_filtrado_df"] = export_df.copy()
+        st.session_state.pop("resguardo_filtrado_pdf", None)
+        st.session_state.pop("resguardo_filtrado_filename", None)
+        dialog_resguardo_filtrado()
+
+    excel_bytes = df_to_excel_bytes({"Inventario": export_df}) if not export_df.empty else None
     with col2:
-        render_excel_export(
-            "Preparar inventario Excel",
+        st.download_button(
             "Descargar inventario Excel",
-            {"Inventario": export_df},
-            f"inventario_datafonos_{date.today()}.xlsx",
-            "inventario"
+            data=excel_bytes or b"",
+            file_name=f"inventario_datafonos_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=not excel_bytes,
+            use_container_width=True,
+            key="inventario_excel_download",
         )
+        if excel_bytes is None and not export_df.empty:
+            st.info("Para activar la exportación a Excel, agrega openpyxl al archivo requirements.txt.")
 
 
 
@@ -1669,6 +1993,101 @@ def dialog_bitacora_terminal(row_id):
 
     if st.button("Cerrar", use_container_width=True):
         st.rerun()
+
+
+@st.dialog("Generar resguardo PDF", width="large")
+def dialog_resguardo_filtrado():
+    filtered_df = st.session_state.get("resguardo_filtrado_df")
+    if not isinstance(filtered_df, pd.DataFrame) or filtered_df.empty:
+        st.warning("No hay datafonos filtrados para generar el resguardo.")
+        if st.button("Cerrar", use_container_width=True):
+            st.rerun()
+        return
+
+    filtered_df = filtered_df.drop(columns=["id", ROW_ACTION_COLUMN, ROW_ACTION_TOKEN_COLUMN], errors="ignore").copy()
+    filtered_df = filtered_df.fillna("").astype(str)
+    signature = dataframe_signature(filtered_df)
+    signature_key = "resguardo_filtrado_signature"
+    pdf_key = "resguardo_filtrado_pdf"
+    filename_key = "resguardo_filtrado_filename"
+    if st.session_state.get(signature_key) != signature:
+        st.session_state.pop(pdf_key, None)
+        st.session_state.pop(filename_key, None)
+        st.session_state[signature_key] = signature
+
+    responsables = []
+    if "responsable" in filtered_df.columns:
+        responsables = [value for value in filtered_df["responsable"].map(normalize_text).unique().tolist() if value]
+    responsable_default = responsables[0] if len(responsables) == 1 else ""
+
+    st.markdown("### Resguardo de datafonos filtrados")
+    st.caption(f"Fecha del resguardo: {format_spanish_date(date.today())}. Datafonos incluidos: {len(filtered_df)}.")
+
+    preview_columns = [
+        col for col in [
+            "numero_terminal", "numero_afiliado", "hotel", "area",
+            "departamento", "responsable", "estatus"
+        ] if col in filtered_df.columns
+    ]
+    if preview_columns:
+        st.dataframe(filtered_df[preview_columns].head(8), use_container_width=True, hide_index=True)
+
+    with st.form("form_resguardo_filtrado"):
+        c1, c2 = st.columns(2)
+        tipo_documento = c1.selectbox("Documento", ["Cédula", "Pasaporte"])
+        numero_documento = c2.text_input("Cédula o pasaporte")
+
+        c3, c4 = st.columns(2)
+        nombre_responsable = c3.text_input("Nombre del responsable", value=responsable_default)
+        puesto_responsable = c4.text_input("Puesto del responsable")
+
+        observacion_resguardo = st.text_area("Observación del resguardo", value="")
+
+        b1, b2 = st.columns(2)
+        generar = b1.form_submit_button("Generar PDF", type="primary", use_container_width=True)
+        cerrar = b2.form_submit_button("Cerrar", use_container_width=True)
+
+    if cerrar:
+        st.session_state.pop(pdf_key, None)
+        st.session_state.pop(filename_key, None)
+        st.rerun()
+
+    if generar:
+        numero_documento = normalize_text(numero_documento)
+        nombre_responsable = normalize_text(nombre_responsable)
+        puesto_responsable = normalize_text(puesto_responsable)
+        observacion_resguardo = normalize_text(observacion_resguardo)
+
+        if not numero_documento or not nombre_responsable or not puesto_responsable:
+            st.error("Completa documento, nombre y puesto del responsable.")
+            return
+
+        try:
+            pdf_bytes = build_resguardo_filtrado_pdf_bytes(
+                filtered_df=filtered_df,
+                tipo_documento=tipo_documento,
+                numero_documento=numero_documento,
+                nombre_responsable=nombre_responsable,
+                puesto_responsable=puesto_responsable,
+                observacion_resguardo=observacion_resguardo,
+            )
+        except ModuleNotFoundError:
+            st.error("Para generar el PDF, agrega reportlab al archivo requirements.txt e instala las dependencias.")
+            return
+
+        st.session_state[pdf_key] = pdf_bytes
+        st.session_state[filename_key] = f"resguardo_datafonos_filtrados_{date.today()}.pdf"
+        st.success("PDF de resguardo generado correctamente.")
+
+    if st.session_state.get(pdf_key):
+        st.download_button(
+            "Descargar PDF de resguardo",
+            data=st.session_state[pdf_key],
+            file_name=st.session_state.get(filename_key, f"resguardo_datafonos_{date.today()}.pdf"),
+            mime="application/pdf",
+            use_container_width=True,
+            key="resguardo_filtrado_download",
+        )
 
 
 @st.dialog("Generar resguardo PDF", width="large")
