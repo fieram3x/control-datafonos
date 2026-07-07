@@ -151,7 +151,7 @@ function render() {
     <div class="app-shell">
       ${renderSidebar()}
       <main class="main">
-        <section class="title-card"><h1>Control de Datafonos</h1></section>
+        <section class="title-card"><h1>${creditCardIcon()}Control de Datafonos</h1></section>
         ${state.loading ? `<div class="panel">Cargando datos...</div>` : renderView()}
       </main>
     </div>
@@ -166,7 +166,7 @@ function renderLogin() {
   return `
     <main class="login-shell">
       <form class="login-card" data-form="login">
-        <h1>Iniciar sesión</h1>
+        <h1>${creditCardIcon()}Iniciar sesión</h1>
         <p>Ingresa tus credenciales para continuar.</p>
         <div class="field">
           <label>Usuario</label>
@@ -192,7 +192,7 @@ function renderSidebar() {
 
   return `
     <aside class="sidebar">
-      <div class="sidebar-title">💳 Control Datafonos</div>
+      <div class="sidebar-title">${creditCardIcon()}Control Datafonos</div>
       <div class="user-card">
         <div><strong>Usuario:</strong> ${escapeHtml(state.session.usuario)}</div>
         <div><strong>Rol:</strong> ${escapeHtml(state.session.rol)}</div>
@@ -223,37 +223,93 @@ function renderView() {
 
 function renderDashboard() {
   const inventory = state.inventory;
+  const currentMonth = todayIso().slice(0, 7);
   const metrics = {
     total: inventory.length,
     activos: countByStatus("Activo"),
     resguardo: countByStatus("Resguardo"),
     reparacion: countByStatus("En reparación"),
+    sustituidos: countByStatus("Sustituido"),
     decomisadosBaja: countByStatus("Decomisado") + countByStatus("Baja"),
-    cambiosMes: state.history.filter((item) => String(item.fecha || "").startsWith(todayIso().slice(0, 7))).length
+    cambiosMes: state.history.filter((item) => String(item.fecha || "").startsWith(currentMonth)).length
   };
   const hotelCounts = countBy(inventory, "hotel");
+  const departmentCounts = countBy(inventory, "departamento");
   const statusCounts = countBy(inventory, "estatus");
+  const activeRate = metrics.total ? Math.round((metrics.activos / metrics.total) * 100) : 0;
+  const custodyRate = metrics.total ? Math.round((metrics.resguardo / metrics.total) * 100) : 0;
+  const recentChanges = [...state.history].reverse().slice(0, 8);
+  const alerts = [
+    ["En reparación", metrics.reparacion, "Equipos que requieren seguimiento"],
+    ["Sustituidos", metrics.sustituidos, "Equipos con cambio operativo"],
+    ["Decomisados/Baja", metrics.decomisadosBaja, "Equipos fuera de operación"]
+  ];
 
   return `
-    <div class="section-head"><h2>Dashboard</h2></div>
-    <section class="metrics">
-      ${metric("Total", metrics.total)}
-      ${metric("Activos", metrics.activos)}
-      ${metric("Resguardo", metrics.resguardo)}
-      ${metric("En reparación", metrics.reparacion)}
-      ${metric("Decomisados/Baja", metrics.decomisadosBaja)}
-      ${metric("Cambios del mes", metrics.cambiosMes)}
+    <div class="section-head dashboard-head">
+      <div>
+        <h2>Dashboard</h2>
+        <p class="muted">Resumen operativo del inventario conectado a Google Sheets.</p>
+      </div>
+      <button class="btn" data-action="refresh">Actualizar</button>
+    </div>
+    <section class="dashboard-hero">
+      <div>
+        <span class="eyebrow">Inventario general</span>
+        <strong>${metrics.total}</strong>
+        <p>Datafonos registrados en la base de datos.</p>
+      </div>
+      <div class="hero-stats">
+        ${miniStat("Activos", `${activeRate}%`, metrics.activos)}
+        ${miniStat("Resguardo", `${custodyRate}%`, metrics.resguardo)}
+        ${miniStat("Cambios del mes", metrics.cambiosMes, "movimientos")}
+      </div>
     </section>
-    <div class="grid-2" style="margin-top:16px">
+    <section class="metrics dashboard-metrics">
+      ${metric("Activos", metrics.activos, "Disponibles para operación")}
+      ${metric("Resguardo", metrics.resguardo, "Asignados bajo responsabilidad")}
+      ${metric("En reparación", metrics.reparacion, "Pendientes de seguimiento")}
+      ${metric("Sustituidos", metrics.sustituidos, "Con terminal reemplazante")}
+      ${metric("Decomisados/Baja", metrics.decomisadosBaja, "Fuera de operación")}
+      ${metric("Cambios del mes", metrics.cambiosMes, currentMonth)}
+    </section>
+    <section class="dashboard-layout">
+      <div class="panel span-2">
+        <div class="panel-head">
+          <h3>Distribución por estatus</h3>
+          <span>${metrics.total} equipos</span>
+        </div>
+        ${renderStatusOverview(statusCounts, metrics.total)}
+      </div>
       <div class="panel">
-        <h3>Distribución por hotel</h3>
+        <div class="panel-head">
+          <h3>Alertas operativas</h3>
+          <span>Seguimiento</span>
+        </div>
+        ${renderAlertList(alerts)}
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Top hoteles</h3>
+          <span>${hotelCounts.length} hoteles</span>
+        </div>
         ${renderBars(hotelCounts)}
       </div>
       <div class="panel">
-        <h3>Distribución por estatus</h3>
-        ${renderBars(statusCounts)}
+        <div class="panel-head">
+          <h3>Top departamentos</h3>
+          <span>${departmentCounts.length} áreas</span>
+        </div>
+        ${renderBars(departmentCounts)}
       </div>
-    </div>
+      <div class="panel span-2">
+        <div class="panel-head">
+          <h3>Últimos movimientos</h3>
+          <span>${recentChanges.length} recientes</span>
+        </div>
+        ${renderRecentChanges(recentChanges)}
+      </div>
+    </section>
   `;
 }
 
@@ -304,10 +360,11 @@ function renderInventoryTable(rows) {
 
 function renderInventoryRow(row) {
   const statusClass = STATUS_CLASS[row.estatus] || "";
+  const activeMenu = state.actionMenu?.id === row.id ? "active" : "";
   return `
     <tr class="${statusClass}">
       <td class="actions-cell">
-        <button class="btn icon kebab-btn" data-action="row-menu" data-id="${escapeAttr(row.id)}" title="Acciones" aria-label="Acciones de terminal ${escapeAttr(row.numero_terminal)}">
+        <button class="btn icon kebab-btn ${activeMenu}" data-action="row-menu" data-id="${escapeAttr(row.id)}" title="Acciones" aria-label="Acciones de terminal ${escapeAttr(row.numero_terminal)}">
           <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
@@ -783,8 +840,24 @@ function uniqueValues(rows, column) {
   return Array.from(new Set(rows.map((row) => String(row[column] || "").trim()))).sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
 }
 
-function metric(label, value) {
-  return `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`;
+function metric(label, value, caption = "") {
+  return `
+    <div class="metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${caption ? `<small>${escapeHtml(caption)}</small>` : ""}
+    </div>
+  `;
+}
+
+function miniStat(label, value, detail) {
+  return `
+    <div class="mini-stat">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <em>${escapeHtml(detail)}</em>
+    </div>
+  `;
 }
 
 function countByStatus(status) {
@@ -800,11 +873,71 @@ function countBy(rows, key) {
   return Object.entries(counts).sort((a, b) => b[1] - a[1]);
 }
 
+function renderStatusOverview(items, total) {
+  if (!items.length) return `<p class="muted">Sin datos.</p>`;
+  let current = 0;
+  const segments = items.map(([label, value], index) => {
+    const start = current;
+    const size = total ? (value / total) * 100 : 0;
+    current += size;
+    return `${dashboardColor(label, index)} ${start}% ${current}%`;
+  });
+  return `
+    <div class="status-overview">
+      <div class="donut" style="background:conic-gradient(${segments.join(", ")})">
+        <span>${total}</span>
+      </div>
+      <div class="status-legend">
+        ${items.map(([label, value], index) => `
+          <div>
+            <i style="background:${dashboardColor(label, index)}"></i>
+            <span>${escapeHtml(label || "Sin valor")}</span>
+            <strong>${value}</strong>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderAlertList(items) {
+  return `
+    <div class="alert-list">
+      ${items.map(([label, value, detail], index) => `
+        <div class="alert-item">
+          <i style="background:${dashboardColor(label, index + 2)}"></i>
+          <div>
+            <strong>${escapeHtml(value)}</strong>
+            <span>${escapeHtml(label)}</span>
+            <small>${escapeHtml(detail)}</small>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderRecentChanges(rows) {
+  if (!rows.length) return `<p class="muted">Sin movimientos recientes.</p>`;
+  return `
+    <div class="recent-list">
+      ${rows.map((row) => `
+        <div class="recent-item">
+          <span>${escapeHtml(row.fecha)}</span>
+          <strong>${escapeHtml(row.terminal_nueva || row.terminal_anterior || "Sin terminal")}</strong>
+          <em>${escapeHtml(row.motivo || "Movimiento")}</em>
+          <small>${escapeHtml(row.responsable || row.departamento || "")}</small>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderBars(items) {
   if (!items.length) return `<p class="muted">Sin datos.</p>`;
   const max = Math.max(...items.map(([, value]) => value));
   return `<div class="chart-list">${items.slice(0, 10).map(([label, value]) => `
-    <div class="bar-row">
+    <div class="bar-row" style="--bar-color:${dashboardColor(label)}">
       <span>${escapeHtml(label)}</span>
       <div class="bar"><span style="width:${Math.max(4, (value / max) * 100)}%"></span></div>
       <strong>${value}</strong>
@@ -812,9 +945,32 @@ function renderBars(items) {
   `).join("")}</div>`;
 }
 
+function dashboardColor(label, fallbackIndex = 0) {
+  const colors = {
+    "Activo": "#10b981",
+    "Resguardo": "#2563eb",
+    "En reparación": "#facc15",
+    "Sustituido": "#14b8a6",
+    "Decomisado": "#fb4b4e",
+    "Baja": "#64748b",
+    "Decomisados/Baja": "#fb4b4e",
+    "Sustituidos": "#14b8a6"
+  };
+  const palette = ["#083344", "#10b981", "#facc15", "#2563eb", "#14b8a6", "#fb4b4e", "#7c3aed", "#64748b"];
+  return colors[label] || palette[Math.abs(String(label || "").length + fallbackIndex) % palette.length];
+}
+
 function statusPill(status) {
   const clean = String(status || "").trim();
   return `<span class="status-pill ${STATUS_PILL[clean] || "pill-default"}">${escapeHtml(clean)}</span>`;
+}
+
+function creditCardIcon() {
+  return `
+    <span class="cc-icon" aria-hidden="true">
+      <span></span>
+    </span>
+  `;
 }
 
 function showToast(message, type = "success") {
