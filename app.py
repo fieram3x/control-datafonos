@@ -52,14 +52,7 @@ SEARCHABLE_HISTORY_COLUMNS = [
     "observacion"
 ]
 ROW_ACTION_COLUMN = "acciones"
-ROW_ACTION_PLACEHOLDER = "⋮"
-ROW_ACTION_OPTIONS = [
-    ROW_ACTION_PLACEHOLDER,
-    "Editar estatus",
-    "Editar datos",
-    "Ver bitácora",
-    "Generar resguardo PDF",
-]
+ROW_ACTION_PLACEHOLDER = "⋯"
 
 DASHBOARD_PALETTE = [
     "#2563EB", "#16A34A", "#F97316", "#DC2626", "#7C3AED",
@@ -967,18 +960,33 @@ def get_aggrid_visible_data(grid_response, fallback_df):
     return pd.DataFrame(data)
 
 
-def get_row_action_from_grid_data(grid_df):
-    if grid_df is None or grid_df.empty or ROW_ACTION_COLUMN not in grid_df.columns or "id" not in grid_df.columns:
-        return None, None
+def render_inventory_row_actions(selected_row):
+    st.markdown("### Acciones del datafono")
 
-    valid_actions = set(ROW_ACTION_OPTIONS) - {ROW_ACTION_PLACEHOLDER}
-    for _, row in grid_df.iterrows():
-        action = normalize_text(row.get(ROW_ACTION_COLUMN))
-        row_id = normalize_text(row.get("id"))
-        if row_id and action in valid_actions:
-            return row_id, action
+    if selected_row is None:
+        st.caption("Selecciona una fila de la tabla para ver las acciones disponibles.")
+        return
 
-    return None, None
+    row_id = normalize_text(selected_row.get("id"))
+    terminal = normalize_text(selected_row.get("numero_terminal"))
+    responsable = normalize_text(selected_row.get("responsable"))
+    estatus = normalize_text(selected_row.get("estatus"))
+    summary = f"Terminal {terminal}"
+    if responsable:
+        summary += f" · {responsable}"
+    if estatus:
+        summary += f" · {estatus}"
+
+    with st.popover(f"{ROW_ACTION_PLACEHOLDER} {summary}", use_container_width=True):
+        st.caption("Acciones disponibles")
+        if st.button("Editar estatus", key=f"action_status_{row_id}", use_container_width=True):
+            dialog_editar_terminal(row_id)
+        if st.button("Editar datos", key=f"action_data_{row_id}", use_container_width=True):
+            dialog_editar_datos_terminal(row_id)
+        if st.button("Ver bitácora", key=f"action_history_{row_id}", use_container_width=True):
+            dialog_bitacora_terminal(row_id)
+        if st.button("Generar resguardo PDF", key=f"action_pdf_{row_id}", type="primary", use_container_width=True):
+            dialog_resguardo_terminal(row_id)
 
 
 def get_registered_options(df, column):
@@ -1218,6 +1226,7 @@ def inventario():
     df = get_inventory()
 
     st.markdown("### Datafonos registrados")
+    actions_placeholder = st.empty()
     display_columns = [
         "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
         "responsable", "estatus", "fecha_asignacion", "fecha_cambio", "sustituido_por",
@@ -1230,6 +1239,7 @@ def inventario():
     if not table_df.empty:
         table_df.insert(0, ROW_ACTION_COLUMN, ROW_ACTION_PLACEHOLDER)
     export_df = table_df.drop(columns=["id", ROW_ACTION_COLUMN], errors="ignore")
+    selected_row = None
 
     if inventory_display.empty:
         st.info("No hay datafonos para mostrar.")
@@ -1256,15 +1266,12 @@ def inventario():
             width=58,
             minWidth=58,
             maxWidth=68,
-            editable=True,
             filter=False,
             sortable=False,
             resizable=False,
             suppressMenu=True,
-            cellEditor="agSelectCellEditor",
-            cellEditorPopup=True,
-            cellEditorParams={"values": ROW_ACTION_OPTIONS},
-            singleClickEdit=True,
+            cellStyle={"textAlign": "center", "fontWeight": "700", "fontSize": "18px", "color": "#334155"},
+            tooltipField="numero_terminal",
         )
         if "id" in table_df.columns:
             gb.configure_column("id", hide=True, suppressColumnsToolPanel=True)
@@ -1279,14 +1286,13 @@ def inventario():
         gb.configure_column("fecha_cambio", header_name="Fecha cambio", minWidth=130)
         gb.configure_column("sustituido_por", header_name="Sustituido por", minWidth=140)
         gb.configure_column("observacion", header_name="Observación", minWidth=220)
+        gb.configure_selection(selection_mode="single", use_checkbox=False)
         gb.configure_grid_options(
             enableCellTextSelection=True,
             ensureDomOrder=True,
             rowHeight=34,
             headerHeight=38,
             suppressMenuHide=True,
-            singleClickEdit=True,
-            stopEditingWhenCellsLoseFocus=True,
         )
         grid_response = AgGrid(
             table_df,
@@ -1303,15 +1309,15 @@ def inventario():
         )
         visible_df = get_aggrid_visible_data(grid_response, table_df)
         export_df = visible_df.drop(columns=["id", ROW_ACTION_COLUMN], errors="ignore")
-        action_row_id, selected_action = get_row_action_from_grid_data(visible_df)
-        if action_row_id and selected_action == "Editar estatus":
-            dialog_editar_terminal(action_row_id)
-        elif action_row_id and selected_action == "Editar datos":
-            dialog_editar_datos_terminal(action_row_id)
-        elif action_row_id and selected_action == "Ver bitácora":
-            dialog_bitacora_terminal(action_row_id)
-        elif action_row_id and selected_action == "Generar resguardo PDF":
-            dialog_resguardo_terminal(action_row_id)
+        selected_id = get_aggrid_selected_row_id(grid_response)
+        if selected_id:
+            st.session_state["inventario_selected_row_id"] = selected_id
+
+        stored_selected_id = st.session_state.get("inventario_selected_row_id")
+        if stored_selected_id:
+            selected_df = inventory_display[inventory_display["id"].astype(str) == str(stored_selected_id)]
+            if not selected_df.empty:
+                selected_row = selected_df.iloc[0]
     else:
         st.info("Instala streamlit-aggrid para activar filtros por columna estilo Excel.")
         table_event = st.dataframe(
@@ -1335,6 +1341,12 @@ def inventario():
                 "observacion": st.column_config.TextColumn("Observación"),
             },
         )
+        selected_rows = get_dataframe_selected_rows(table_event)
+        if selected_rows and selected_rows[0] < len(inventory_display):
+            selected_row = inventory_display.iloc[selected_rows[0]]
+
+    with actions_placeholder.container():
+        render_inventory_row_actions(selected_row)
 
     col1, col2 = st.columns(2)
     col1.download_button(
