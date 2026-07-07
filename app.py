@@ -1201,11 +1201,18 @@ def inventario():
     elif AgGrid is not None:
         gb = GridOptionsBuilder.from_dataframe(table_df)
         gb.configure_default_column(
-            filter=True,
-            floatingFilter=True,
+            filter="agSetColumnFilter",
+            floatingFilter=False,
             sortable=True,
             resizable=True,
             minWidth=120,
+            menuTabs=["filterMenuTab", "generalMenuTab"],
+            filterParams={
+                "excelMode": "windows",
+                "buttons": ["apply", "reset"],
+                "closeOnApply": True,
+                "suppressSelectAll": False,
+            },
         )
         if "id" in table_df.columns:
             gb.configure_column("id", hide=True, suppressColumnsToolPanel=True)
@@ -1226,7 +1233,7 @@ def inventario():
             ensureDomOrder=True,
             rowHeight=34,
             headerHeight=38,
-            floatingFiltersHeight=34,
+            suppressMenuHide=True,
         )
         grid_response = AgGrid(
             table_df,
@@ -1236,6 +1243,7 @@ def inventario():
             update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.FILTERING_CHANGED | GridUpdateMode.SORTING_CHANGED,
             data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
             allow_unsafe_jscode=False,
+            enable_enterprise_modules=True,
             theme="streamlit",
             key="inventario_maestro_grid",
         )
