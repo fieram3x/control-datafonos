@@ -1174,8 +1174,12 @@ def inventario():
     header()
     st.subheader("Inventario maestro")
 
-    with st.expander("Registrar nuevo datafono", expanded=False):
-        render_registro_datafono_form("form_registro_inventario")
+    registro_message = st.session_state.pop("registro_datafono_success", None)
+    if registro_message:
+        st.success(registro_message)
+
+    if st.button("Registrar nuevo datafono", type="primary"):
+        dialog_registrar_datafono()
 
     df = get_inventory()
 
@@ -1329,16 +1333,16 @@ def render_registro_datafono_form(form_key="form_registro"):
         numero_terminal, numero_afiliado, validation_error = validate_terminal_fields(numero_terminal, numero_afiliado)
         if validation_error:
             st.error(validation_error)
-            return
+            return None
         if not hotel or not area or not departamento or not estatus:
             st.error("Completa los campos obligatorios.")
-            return
+            return None
 
         df = get_inventory()
         terminales_existentes = df["numero_terminal"].astype(str).map(normalize_terminal) if not df.empty else pd.Series(dtype=str)
         if numero_terminal in terminales_existentes.values:
             st.error("Ese número de terminal ya existe en el inventario.")
-            return
+            return None
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_row = {
@@ -1360,6 +1364,18 @@ def render_registro_datafono_form(form_key="form_registro"):
         append_sheet_row("Inventario", new_row, INVENTARIO_COLUMNS)
         add_history(numero_terminal, "", hotel, area, departamento, "", estatus, "Registro inicial", responsable, observacion)
         st.success("Datafono registrado correctamente.")
+        return numero_terminal
+
+    return None
+
+
+@st.dialog("Registrar nuevo datafono", width="large")
+def dialog_registrar_datafono():
+    saved_terminal = render_registro_datafono_form("form_registro_datafono_modal")
+    if saved_terminal:
+        st.session_state["registro_datafono_success"] = f"Datafono {saved_terminal} registrado correctamente."
+        time.sleep(0.6)
+        st.rerun()
 
 
 def registrar_datafono():
