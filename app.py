@@ -51,6 +51,15 @@ SEARCHABLE_HISTORY_COLUMNS = [
     "departamento", "estatus_anterior", "estatus_nuevo", "motivo", "responsable",
     "observacion"
 ]
+ROW_ACTION_COLUMN = "acciones"
+ROW_ACTION_PLACEHOLDER = "⋮"
+ROW_ACTION_OPTIONS = [
+    ROW_ACTION_PLACEHOLDER,
+    "Editar estatus",
+    "Editar datos",
+    "Ver bitácora",
+    "Generar resguardo PDF",
+]
 
 DASHBOARD_PALETTE = [
     "#2563EB", "#16A34A", "#F97316", "#DC2626", "#7C3AED",
@@ -292,6 +301,17 @@ def format_spanish_date(value):
             parsed_date = date.today()
     month_name = MONTH_NAMES_ES.get(parsed_date.month, "")
     return f"{parsed_date.day} de {month_name} de {parsed_date.year}"
+
+
+def parse_date_or_today(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(normalize_text(value)[:10])
+    except ValueError:
+        return date.today()
 
 
 def normalize_filename_part(value):
@@ -947,6 +967,20 @@ def get_aggrid_visible_data(grid_response, fallback_df):
     return pd.DataFrame(data)
 
 
+def get_row_action_from_grid_data(grid_df):
+    if grid_df is None or grid_df.empty or ROW_ACTION_COLUMN not in grid_df.columns or "id" not in grid_df.columns:
+        return None, None
+
+    valid_actions = set(ROW_ACTION_OPTIONS) - {ROW_ACTION_PLACEHOLDER}
+    for _, row in grid_df.iterrows():
+        action = normalize_text(row.get(ROW_ACTION_COLUMN))
+        row_id = normalize_text(row.get("id"))
+        if row_id and action in valid_actions:
+            return row_id, action
+
+    return None, None
+
+
 def get_registered_options(df, column):
     if df.empty or column not in df.columns:
         return []
@@ -1192,10 +1226,11 @@ def inventario():
     display_columns = [col for col in display_columns if col in df.columns]
     inventory_display = df.reset_index(drop=True)
     table_columns = ["id"] + display_columns if "id" in inventory_display.columns else display_columns
-    table_df = inventory_display[table_columns] if table_columns else inventory_display
-    export_df = table_df.drop(columns=["id"], errors="ignore")
+    table_df = (inventory_display[table_columns] if table_columns else inventory_display).copy()
+    if not table_df.empty:
+        table_df.insert(0, ROW_ACTION_COLUMN, ROW_ACTION_PLACEHOLDER)
+    export_df = table_df.drop(columns=["id", ROW_ACTION_COLUMN], errors="ignore")
 
-    selected_row = None
     if inventory_display.empty:
         st.info("No hay datafonos para mostrar.")
     elif AgGrid is not None:
@@ -1214,6 +1249,23 @@ def inventario():
                 "suppressSelectAll": False,
             },
         )
+        gb.configure_column(
+            ROW_ACTION_COLUMN,
+            header_name="",
+            pinned="left",
+            width=58,
+            minWidth=58,
+            maxWidth=68,
+            editable=True,
+            filter=False,
+            sortable=False,
+            resizable=False,
+            suppressMenu=True,
+            cellEditor="agSelectCellEditor",
+            cellEditorPopup=True,
+            cellEditorParams={"values": ROW_ACTION_OPTIONS},
+            singleClickEdit=True,
+        )
         if "id" in table_df.columns:
             gb.configure_column("id", hide=True, suppressColumnsToolPanel=True)
         gb.configure_column("numero_terminal", header_name="Terminal", pinned="left", minWidth=120)
@@ -1227,13 +1279,14 @@ def inventario():
         gb.configure_column("fecha_cambio", header_name="Fecha cambio", minWidth=130)
         gb.configure_column("sustituido_por", header_name="Sustituido por", minWidth=140)
         gb.configure_column("observacion", header_name="Observación", minWidth=220)
-        gb.configure_selection(selection_mode="single", use_checkbox=True)
         gb.configure_grid_options(
             enableCellTextSelection=True,
             ensureDomOrder=True,
             rowHeight=34,
             headerHeight=38,
             suppressMenuHide=True,
+            singleClickEdit=True,
+            stopEditingWhenCellsLoseFocus=True,
         )
         grid_response = AgGrid(
             table_df,
@@ -1244,16 +1297,21 @@ def inventario():
             data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
             allow_unsafe_jscode=False,
             enable_enterprise_modules=True,
+            server_sync_strategy="server_wins",
             theme="streamlit",
             key="inventario_maestro_grid",
         )
         visible_df = get_aggrid_visible_data(grid_response, table_df)
-        export_df = visible_df.drop(columns=["id"], errors="ignore")
-        selected_id = get_aggrid_selected_row_id(grid_response)
-        if selected_id:
-            selected_df = inventory_display[inventory_display["id"].astype(str) == selected_id]
-            if not selected_df.empty:
-                selected_row = selected_df.iloc[0]
+        export_df = visible_df.drop(columns=["id", ROW_ACTION_COLUMN], errors="ignore")
+        action_row_id, selected_action = get_row_action_from_grid_data(visible_df)
+        if action_row_id and selected_action == "Editar estatus":
+            dialog_editar_terminal(action_row_id)
+        elif action_row_id and selected_action == "Editar datos":
+            dialog_editar_datos_terminal(action_row_id)
+        elif action_row_id and selected_action == "Ver bitácora":
+            dialog_bitacora_terminal(action_row_id)
+        elif action_row_id and selected_action == "Generar resguardo PDF":
+            dialog_resguardo_terminal(action_row_id)
     else:
         st.info("Instala streamlit-aggrid para activar filtros por columna estilo Excel.")
         table_event = st.dataframe(
@@ -1277,22 +1335,6 @@ def inventario():
                 "observacion": st.column_config.TextColumn("Observación"),
             },
         )
-        selected_rows = get_dataframe_selected_rows(table_event)
-        if selected_rows and selected_rows[0] < len(inventory_display):
-            selected_row = inventory_display.iloc[selected_rows[0]]
-
-    st.markdown("### Acciones")
-    selected_label = normalize_text(selected_row["numero_terminal"]) if selected_row is not None else "Sin selección"
-    st.caption(f"Terminal seleccionada: {selected_label}")
-
-    action_1, action_2, action_3 = st.columns(3)
-    actions_disabled = selected_row is None
-    if action_1.button("Editar / cambiar estatus", use_container_width=True, disabled=actions_disabled):
-        dialog_editar_terminal(str(selected_row["id"]))
-    if action_2.button("Ver bitácora", use_container_width=True, disabled=actions_disabled):
-        dialog_bitacora_terminal(str(selected_row["id"]))
-    if action_3.button("Generar resguardo PDF", use_container_width=True, disabled=actions_disabled, type="primary"):
-        dialog_resguardo_terminal(str(selected_row["id"]))
 
     col1, col2 = st.columns(2)
     col1.download_button(
@@ -1448,12 +1490,9 @@ def dialog_editar_terminal(row_id):
 
     row = selected_df.iloc[0]
     terminal_sel = str(row["numero_terminal"])
-    hoteles = cfg("Hoteles")
-    departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
-    areas = cfg("Areas")
 
-    st.markdown(f"### Editar estatus / ubicación — Terminal {terminal_sel}")
+    st.markdown(f"### Editar estatus - Terminal {terminal_sel}")
     st.markdown(
         f"""
         **Datos actuales:**  
@@ -1464,22 +1503,15 @@ def dialog_editar_terminal(row_id):
 
     with st.form(f"form_editar_terminal_modal_{row_id}"):
         c1, c2, c3 = st.columns(3)
-        nuevo_hotel = c1.selectbox("Hotel", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
-        nueva_area = c2.selectbox("Área", areas, index=areas.index(row["area"]) if row["area"] in areas else None, placeholder="Seleccione área")
-        nuevo_departamento = c3.selectbox("Departamento", departamentos, index=departamentos.index(row["departamento"]) if row["departamento"] in departamentos else 0)
+        nuevo_estatus = c1.selectbox("Estatus", estatus_list, index=estatus_list.index(row["estatus"]) if row["estatus"] in estatus_list else 0)
+        fecha_cambio = c2.date_input("Fecha cambio", value=date.today())
+        sustituido_por = c3.text_input("Sustituido por", value=row["sustituido_por"])
 
-        c4, c5, c6 = st.columns(3)
-        nuevo_responsable = c4.text_input("Responsable", value=row["responsable"])
-        nuevo_estatus = c5.selectbox("Estatus", estatus_list, index=estatus_list.index(row["estatus"]) if row["estatus"] in estatus_list else 0)
-        fecha_cambio = c6.date_input("Fecha cambio", value=date.today())
-
-        c7, c8 = st.columns(2)
-        sustituido_por = c7.text_input("Sustituido por", value=row["sustituido_por"])
-        motivo = c8.text_input("Motivo", value="Actualización de estatus / ubicación")
+        motivo = st.text_input("Motivo", value="Actualización de estatus")
         observacion = st.text_area("Observación", value=row["observacion"])
 
         b1, b2 = st.columns([1, 1])
-        guardar = b1.form_submit_button("Guardar cambios", type="primary", use_container_width=True)
+        guardar = b1.form_submit_button("Guardar estatus", type="primary", use_container_width=True)
         cerrar = b2.form_submit_button("Cerrar", use_container_width=True)
 
     if cerrar:
@@ -1488,10 +1520,10 @@ def dialog_editar_terminal(row_id):
     if guardar:
         aplicar_actualizacion_terminal(
             row_id=row["id"],
-            nuevo_hotel=nuevo_hotel,
-            nueva_area=nueva_area,
-            nuevo_departamento=nuevo_departamento,
-            nuevo_responsable=nuevo_responsable,
+            nuevo_hotel=row["hotel"],
+            nueva_area=row["area"],
+            nuevo_departamento=row["departamento"],
+            nuevo_responsable=row["responsable"],
             nuevo_estatus=nuevo_estatus,
             fecha_cambio=fecha_cambio,
             sustituido_por=sustituido_por,
@@ -1499,6 +1531,105 @@ def dialog_editar_terminal(row_id):
             observacion=observacion
         )
         st.success("Cambios guardados correctamente.")
+        time.sleep(0.8)
+        st.rerun()
+
+
+@st.dialog("Editar datos del datafono", width="large")
+def dialog_editar_datos_terminal(row_id):
+    df = get_inventory()
+    selected_df = df[df["id"].astype(str) == str(row_id)]
+    if selected_df.empty:
+        st.warning("La terminal seleccionada ya no existe o fue actualizada.")
+        if st.button("Cerrar", use_container_width=True):
+            st.rerun()
+        return
+
+    row = selected_df.iloc[0]
+    terminal_sel = normalize_text(row["numero_terminal"])
+    hoteles = cfg("Hoteles")
+    departamentos = cfg("Departamentos")
+    areas = cfg("Areas")
+
+    st.markdown(f"### Editar datos - Terminal {terminal_sel}")
+
+    with st.form(f"form_editar_datos_terminal_{row_id}"):
+        c1, c2, c3 = st.columns(3)
+        numero_terminal = c1.text_input("Número Terminal *", value=row["numero_terminal"])
+        numero_afiliado = c2.text_input("Número Afiliado *", value=row["numero_afiliado"])
+        hotel = c3.selectbox("Hotel *", hoteles, index=hoteles.index(row["hotel"]) if row["hotel"] in hoteles else 0)
+
+        c4, c5, c6 = st.columns(3)
+        area = c4.selectbox("Área *", areas, index=areas.index(row["area"]) if row["area"] in areas else 0)
+        departamento = c5.selectbox("Departamento *", departamentos, index=departamentos.index(row["departamento"]) if row["departamento"] in departamentos else 0)
+        responsable = c6.text_input("Responsable", value=row["responsable"])
+
+        fecha_asignacion = st.date_input(
+            "Fecha asignación",
+            value=parse_date_or_today(row["fecha_asignacion"])
+        )
+        observacion = st.text_area("Observación", value=row["observacion"])
+
+        b1, b2 = st.columns(2)
+        guardar = b1.form_submit_button("Guardar datos", type="primary", use_container_width=True)
+        cerrar = b2.form_submit_button("Cerrar", use_container_width=True)
+
+    if cerrar:
+        st.rerun()
+
+    if guardar:
+        numero_terminal, numero_afiliado, validation_error = validate_terminal_fields(numero_terminal, numero_afiliado)
+        if validation_error:
+            st.error(validation_error)
+            return
+        if not hotel or not area or not departamento:
+            st.error("Completa los campos obligatorios.")
+            return
+
+        terminales_existentes = df[df["id"].astype(str) != str(row_id)]["numero_terminal"].astype(str).map(normalize_terminal)
+        if numero_terminal in terminales_existentes.values:
+            st.error("Ese número de terminal ya existe en el inventario.")
+            return
+
+        updated_row = row.to_dict()
+        updated_row.update({
+            "numero_terminal": numero_terminal,
+            "numero_afiliado": numero_afiliado,
+            "hotel": hotel,
+            "area": area,
+            "departamento": departamento,
+            "responsable": responsable,
+            "fecha_asignacion": str(fecha_asignacion),
+            "observacion": observacion,
+            "actualizado_el": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+        tracked_fields = [
+            "numero_terminal", "numero_afiliado", "hotel", "area",
+            "departamento", "responsable", "fecha_asignacion", "observacion"
+        ]
+        has_changes = any(normalize_text(updated_row[field]) != normalize_text(row[field]) for field in tracked_fields)
+        if not has_changes:
+            st.info("No hay cambios para guardar.")
+            return
+
+        if not update_sheet_row("Inventario", INVENTARIO_COLUMNS, "id", row_id, updated_row):
+            st.error("No se pudo actualizar la fila en Google Sheets.")
+            return
+
+        add_history(
+            terminal_anterior=str(row["numero_terminal"]),
+            terminal_nueva=numero_terminal if numero_terminal != normalize_terminal(row["numero_terminal"]) else "",
+            hotel=hotel,
+            area=area,
+            departamento=departamento,
+            estatus_anterior=str(row["estatus"]),
+            estatus_nuevo=str(row["estatus"]),
+            motivo="Edición de datos maestros",
+            responsable=responsable,
+            observacion=observacion
+        )
+        st.success("Datos actualizados correctamente.")
         time.sleep(0.8)
         st.rerun()
 
