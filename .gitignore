@@ -2,6 +2,10 @@ __pycache__/
 *.py[cod]
 .streamlit/secrets.toml
 .env
+.dev.vars
+dist/
+node_modules/
+.wrangler/
 .venv/
 venv/
 *.log

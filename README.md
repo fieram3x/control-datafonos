@@ -1,17 +1,85 @@
 # Control de Datafonos
 
-Aplicación Streamlit para administrar el inventario de datafonos, registrar movimientos, consultar historial, exportar reportes y gestionar usuarios con roles.
+Aplicación para administrar el inventario de datafonos, registrar movimientos, consultar historial, exportar reportes y gestionar usuarios con roles.
+
+El repositorio conserva la versión Streamlit (`app.py`) y agrega una versión Cloudflare Workers + Static Assets que usa la misma base de datos en Google Sheets.
 
 ## Funcionalidades
 
 - Dashboard con métricas por estatus, hotel y departamento.
-- Inventario maestro unificado con tabla estilo Excel, filtros por columna, registro de datafonos y exportación CSV/Excel.
+- Inventario maestro unificado con tabla estilo Excel, filtros por columna, registro de datafonos y exportación Excel.
 - Edición de ubicación, responsable, estatus y bitácora desde la fila seleccionada.
 - Generación de carta de resguardo en PDF para firma del responsable.
 - Historial de cambios con filtros y exportación.
 - Administración de usuarios para rol `Administrador`.
 
-## Requisitos
+## Ejecutar en Cloudflare
+
+La versión Cloudflare está en:
+
+```text
+src/worker.js          # API sobre Cloudflare Workers
+public/                # Frontend HTML/CSS/JS
+wrangler.jsonc         # Configuración de Cloudflare
+package.json           # Scripts de desarrollo y despliegue
+```
+
+Requisitos:
+
+- Node.js 20 o superior.
+- Cuenta de Cloudflare con Wrangler.
+- El mismo Google Sheet compartido con el `client_email` de la cuenta de servicio.
+- Credenciales de la cuenta de servicio de Google con acceso a Sheets.
+
+Instalación local:
+
+```powershell
+pnpm install
+Copy-Item .dev.vars.example .dev.vars
+```
+
+Edita `.dev.vars` con tus valores reales:
+
+```text
+GOOGLE_SHEET_ID="..."
+GOOGLE_CLIENT_EMAIL="..."
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+APP_INITIAL_ADMIN_USER="admin"
+APP_INITIAL_ADMIN_PASSWORD="cambia-esta-clave"
+APP_SESSION_SECRET="cambia-este-secreto-largo"
+```
+
+Ejecutar local:
+
+```powershell
+pnpm run dev:cf
+```
+
+Validar antes de publicar:
+
+```powershell
+pnpm run check:cf
+```
+
+Publicar en Cloudflare:
+
+```powershell
+pnpm exec wrangler secret put GOOGLE_SHEET_ID
+pnpm exec wrangler secret put GOOGLE_CLIENT_EMAIL
+pnpm exec wrangler secret put GOOGLE_PRIVATE_KEY
+pnpm exec wrangler secret put APP_INITIAL_ADMIN_USER
+pnpm exec wrangler secret put APP_INITIAL_ADMIN_PASSWORD
+pnpm exec wrangler secret put APP_SESSION_SECRET
+pnpm run deploy:cf
+```
+
+Importante: la hoja de Google debe estar compartida con el correo `GOOGLE_CLIENT_EMAIL`. No hace falta cambiar la estructura de la base de datos; la app usa las hojas `Inventario`, `Historial`, `Usuarios` y `Config`.
+
+## Ejecutar en Streamlit
+
+La versión anterior sigue disponible en `app.py`.
+
+Requisitos:
 
 - Python 3.11.
 - Acceso a un Google Sheet compartido con el `client_email` de una cuenta de servicio.
@@ -73,10 +141,15 @@ La fecha del resguardo se genera automáticamente con la fecha del día.
 ## Estructura
 
 ```text
-app.py                  # Aplicación Streamlit
+app.py                  # Aplicación Streamlit anterior
+src/worker.js           # API Cloudflare Workers
+public/                 # Interfaz web Cloudflare
+wrangler.jsonc          # Configuración Cloudflare
+package.json            # Scripts Node/Wrangler
 requirements.txt        # Dependencias Python
 runtime.txt             # Runtime esperado
 secrets.toml.example    # Plantilla de configuración sin credenciales reales
+.dev.vars.example       # Plantilla de configuración local para Cloudflare
 devcontainer.json       # Configuración para Codespaces/devcontainer
 ```
 

@@ -1,0 +1,6 @@
+GOOGLE_SHEET_ID="TU_SPREADSHEET_ID"
+GOOGLE_CLIENT_EMAIL="tu-service-account@tu-proyecto.iam.gserviceaccount.com"
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nTU_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
+APP_INITIAL_ADMIN_USER="admin"
+APP_INITIAL_ADMIN_PASSWORD="cambia-esta-clave"
+APP_SESSION_SECRET="cambia-este-secreto-largo"

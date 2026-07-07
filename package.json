@@ -1,0 +1,14 @@
+{
+  "name": "control-datafonos-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:cf": "wrangler dev",
+    "deploy:cf": "wrangler deploy",
+    "check:cf": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.25.0"
+  }
+}
