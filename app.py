@@ -43,6 +43,8 @@ HISTORIAL_COLUMNS = [
 
 USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"]
 PASSWORD_PREFIX = "pbkdf2_sha256"
+PASSWORD_ITERATIONS = 100000
+LEGACY_PASSWORD_ITERATIONS = 200000
 SEARCHABLE_INVENTORY_COLUMNS = [
     "numero_terminal", "numero_afiliado", "hotel", "area", "departamento",
     "responsable", "estatus", "sustituido_por", "observacion"
@@ -333,7 +335,7 @@ def validate_terminal_fields(numero_terminal, numero_afiliado):
 
 def make_password_hash(password):
     salt = os.urandom(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200000)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
     salt_b64 = base64.b64encode(salt).decode("ascii")
     digest_b64 = base64.b64encode(digest).decode("ascii")
     return f"{PASSWORD_PREFIX}${salt_b64}${digest_b64}"
@@ -353,8 +355,11 @@ def verify_password(password, stored_value):
         expected = base64.b64decode(digest_b64.encode("ascii"))
     except Exception:
         return False
-    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200000)
-    return hmac.compare_digest(actual, expected)
+    for iterations in (PASSWORD_ITERATIONS, LEGACY_PASSWORD_ITERATIONS):
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        if hmac.compare_digest(actual, expected):
+            return True
+    return False
 
 
 def prepare_sheet_df(df, columns):

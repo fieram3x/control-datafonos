@@ -11,6 +11,7 @@ const HISTORIAL_COLUMNS = [
 
 const USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"];
 const PASSWORD_PREFIX = "pbkdf2_sha256";
+const PASSWORD_ITERATIONS = 100000;
 const SESSION_COOKIE = "datafonos_session";
 const SESSION_MAX_AGE = 60 * 60 * 8;
 
@@ -723,7 +724,7 @@ async function verifyPassword(password, storedValue) {
 async function pbkdf2(password, salt) {
   const key = await crypto.subtle.importKey("raw", encoder().encode(String(password)), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations: PASSWORD_ITERATIONS, hash: "SHA-256" },
     key,
     256
   );
