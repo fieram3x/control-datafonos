@@ -595,9 +595,10 @@ function modalButtons(primaryText) {
 async function handleClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) {
+    const hadPopup = Boolean(state.actionMenu || state.filterMenu);
     state.actionMenu = null;
     state.filterMenu = null;
-    render();
+    if (hadPopup) render();
     return;
   }
 
