@@ -630,7 +630,9 @@ def palette_for(values):
     }
 
 
-def colored_bar_chart(data, category_col, value_col, color_map, title=None, horizontal=True):
+def colored_bar_chart(data, category_col, value_col, color_map, title=None, horizontal=True, height=360):
+    max_value = float(pd.to_numeric(data[value_col], errors="coerce").fillna(0).max()) if not data.empty else 1
+    max_value = max(max_value, 1)
     base = alt.Chart(data).encode(
         tooltip=[
             alt.Tooltip(f"{category_col}:N", title=category_col.replace("_", " ").title()),
@@ -646,9 +648,14 @@ def colored_bar_chart(data, category_col, value_col, color_map, title=None, hori
     if horizontal:
         bars = base.mark_bar(cornerRadiusEnd=6).encode(
             y=alt.Y(f"{category_col}:N", sort="-x", title=None),
-            x=alt.X(f"{value_col}:Q", title=None, axis=alt.Axis(format="d")),
+            x=alt.X(
+                f"{value_col}:Q",
+                title=None,
+                axis=alt.Axis(format="d", grid=True),
+                scale=alt.Scale(domain=[0, max_value * 1.16], nice=False),
+            ),
         )
-        labels = base.mark_text(align="left", baseline="middle", dx=5, color="#0F172A").encode(
+        labels = base.mark_text(align="left", baseline="middle", dx=7, color="#0F172A", fontWeight=700).encode(
             y=alt.Y(f"{category_col}:N", sort="-x", title=None),
             x=alt.X(f"{value_col}:Q", title=None),
             text=alt.Text(f"{value_col}:Q", format="d"),
@@ -658,39 +665,56 @@ def colored_bar_chart(data, category_col, value_col, color_map, title=None, hori
             x=alt.X(f"{category_col}:N", sort="-y", title=None, axis=alt.Axis(labelAngle=-30)),
             y=alt.Y(f"{value_col}:Q", title=None, axis=alt.Axis(format="d")),
         )
-        labels = base.mark_text(dy=-8, color="#0F172A").encode(
+        labels = base.mark_text(dy=-8, color="#0F172A", fontWeight=700).encode(
             x=alt.X(f"{category_col}:N", sort="-y", title=None),
             y=alt.Y(f"{value_col}:Q", title=None),
             text=alt.Text(f"{value_col}:Q", format="d"),
         )
 
-    chart = (bars + labels).properties(height=330)
+    chart = (
+        (bars + labels)
+        .properties(height=height)
+        .configure_axis(labelFontSize=12, titleFontSize=12, labelLimit=220)
+        .configure_view(strokeWidth=0)
+    )
     if title:
         chart = chart.properties(title=title)
     return chart
 
 
-def donut_chart(data, category_col, value_col, color_map):
+def pie_chart(data, category_col, value_col, color_map, height=380):
     data = data.copy()
+    total = int(pd.to_numeric(data[value_col], errors="coerce").fillna(0).sum())
+    data["porcentaje"] = data[value_col] / total if total else 0
     label_col = f"{category_col}_label"
-    data[label_col] = data[category_col].astype(str) + " (" + data[value_col].astype(int).astype(str) + ")"
+    data[label_col] = (
+        data[category_col].astype(str)
+        + " ("
+        + data[value_col].astype(int).astype(str)
+        + ")"
+    )
     label_color_map = {
         f"{category} ({int(data.loc[data[category_col] == category, value_col].iloc[0])})": color
         for category, color in color_map.items()
         if not data.loc[data[category_col] == category, value_col].empty
     }
-    return alt.Chart(data).mark_arc(innerRadius=70, outerRadius=125, cornerRadius=4).encode(
+    return alt.Chart(data).mark_arc(outerRadius=140, stroke="#FFFFFF", strokeWidth=2).encode(
         theta=alt.Theta(f"{value_col}:Q", stack=True),
         color=alt.Color(
             f"{label_col}:N",
             scale=alt.Scale(domain=list(label_color_map.keys()), range=list(label_color_map.values())),
-            legend=alt.Legend(title=None, orient="bottom", columns=2),
+            legend=alt.Legend(title=None, orient="right"),
         ),
         tooltip=[
             alt.Tooltip(f"{category_col}:N", title=category_col.replace("_", " ").title()),
             alt.Tooltip(f"{value_col}:Q", title=value_col),
+            alt.Tooltip("porcentaje:Q", title="Porcentaje", format=".1%"),
         ],
-    ).properties(height=330)
+    ).properties(height=height).configure_view(strokeWidth=0)
+
+
+def chart_height_for_rows(data, minimum=360, maximum=540, row_height=34):
+    return max(minimum, min(maximum, 88 + (len(data) * row_height)))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -705,7 +729,7 @@ def df_to_excel_bytes(sheets):
         return None
 
 
-def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_responsable, puesto_responsable, observacion_resguardo):
+def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_responsable, puesto_responsable, nombre_entrega="", observacion_resguardo=""):
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
     from reportlab.lib.pagesizes import letter
@@ -727,7 +751,7 @@ def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_resp
         leftMargin=0.65 * inch,
         topMargin=0.65 * inch,
         bottomMargin=0.65 * inch,
-        title="Carta de Resguardo de Datafono",
+        title="Carta de Resguardo de Datafonos",
     )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(
@@ -789,16 +813,19 @@ def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_resp
     observacion_inventario = row_value("observacion")
 
     story = [
-        Paragraph("CARTA DE RESGUARDO DE DATAFONO", styles["TitleCenter"]),
+        Paragraph("CARTA DE RESGUARDO DE DATÁFONOS", styles["TitleCenter"]),
         Paragraph(f"Santo Domingo, {fecha_resguardo}", styles["MetaRight"]),
         Spacer(1, 12),
         Paragraph(
-            "Por medio de la presente se deja constancia de la entrega en calidad de resguardo "
-            "del datafono detallado a continuación. La persona responsable declara recibir el "
-            "equipo para uso operativo, comprometiéndose a custodiarlo, utilizarlo de forma "
-            "adecuada y reportar oportunamente cualquier cambio, pérdida, daño o devolución.",
+            "Por medio de la presente se deja constancia de que la persona indicada en este "
+            "documento recibe en calidad de resguardo el datáfono detallado más adelante, el cual "
+            "será utilizado exclusivamente para fines operativos de la empresa. La persona "
+            "responsable se compromete a custodiar dicho equipo, utilizarlo de forma adecuada, "
+            "mantenerlo en buen estado y reportar oportunamente cualquier cambio, pérdida, daño, "
+            "traslado o devolución.",
             styles["BodyJustify"],
         ),
+        Paragraph("<b>Cantidad de datáfonos incluidos:</b> 1", styles["BodyJustify"]),
         Spacer(1, 8),
     ]
 
@@ -858,18 +885,30 @@ def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_resp
         Spacer(1, 22),
     ])
 
+    entregado_por = normalize_text(nombre_entrega) or "Nombre y firma"
     signature_table = Table([
         [
-            Paragraph("__________________________________<br/>Responsable<br/>" + escape_html(nombre_responsable), styles["Signature"]),
-            Paragraph("__________________________________<br/>Entregado por<br/>Nombre y firma", styles["Signature"]),
+            Paragraph("<b>Responsable</b>", styles["Signature"]),
+            "",
+            Paragraph("<b>Entregado por</b>", styles["Signature"]),
         ],
         [
-            Paragraph("<br/><br/>__________________________________<br/>Auditoría / Administración<br/>Nombre y firma", styles["Signature"]),
-            Paragraph("<br/><br/>__________________________________<br/>Recibido conforme<br/>Fecha y hora", styles["Signature"]),
+            Paragraph(escape_html(nombre_responsable), styles["Signature"]),
+            "",
+            Paragraph(escape_html(entregado_por), styles["Signature"]),
         ],
-    ], colWidths=[3.25 * inch, 3.25 * inch], rowHeights=[1.0 * inch, 1.15 * inch])
+        [
+            "",
+            "",
+            Paragraph("Auditoría / Administración", styles["Signature"]),
+        ],
+    ], colWidths=[2.9 * inch, 0.65 * inch, 2.9 * inch], rowHeights=[0.34 * inch, 0.28 * inch, 0.24 * inch])
     signature_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("LINEABOVE", (0, 0), (0, 0), 0.75, colors.HexColor("#0F172A")),
+        ("LINEABOVE", (2, 0), (2, 0), 0.75, colors.HexColor("#0F172A")),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
     ]))
     story.append(signature_table)
@@ -878,7 +917,7 @@ def build_resguardo_pdf_bytes(row, tipo_documento, numero_documento, nombre_resp
     return buffer.getvalue()
 
 
-def build_resguardo_filtrado_pdf_bytes(filtered_df, tipo_documento, numero_documento, nombre_responsable, puesto_responsable, observacion_resguardo):
+def build_resguardo_filtrado_pdf_bytes(filtered_df, tipo_documento, numero_documento, nombre_responsable, puesto_responsable, nombre_entrega="", observacion_resguardo=""):
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
     from reportlab.lib.pagesizes import landscape, letter
@@ -968,17 +1007,19 @@ def build_resguardo_filtrado_pdf_bytes(filtered_df, tipo_documento, numero_docum
     filtered_df = filtered_df.copy().fillna("")
 
     story = [
-        Paragraph("CARTA DE RESGUARDO DE DATAFONOS", styles["TitleCenterFiltered"]),
+        Paragraph("CARTA DE RESGUARDO DE DATÁFONOS", styles["TitleCenterFiltered"]),
         Paragraph(f"Santo Domingo, {fecha_resguardo}", styles["MetaRightFiltered"]),
         Spacer(1, 8),
         Paragraph(
-            "Por medio de la presente se deja constancia de la entrega en calidad de resguardo "
-            "de los datafonos detallados en este documento. La persona responsable declara recibir "
-            "los equipos para uso operativo, comprometiéndose a custodiarlos, utilizarlos de forma "
-            "adecuada y reportar oportunamente cualquier cambio, pérdida, daño o devolución.",
+            "Por medio de la presente se deja constancia de que la persona indicada en este "
+            "documento recibe en calidad de resguardo los datáfonos detallados más adelante, los "
+            "cuales serán utilizados exclusivamente para fines operativos de la empresa. La persona "
+            "responsable se compromete a custodiar dichos equipos, utilizarlos de forma adecuada, "
+            "mantenerlos en buen estado y reportar oportunamente cualquier cambio, pérdida, daño, "
+            "traslado o devolución.",
             styles["BodyJustifyFiltered"],
         ),
-        Paragraph(f"<b>Cantidad de datafonos incluidos:</b> {len(filtered_df)}", styles["BodyJustifyFiltered"]),
+        Paragraph(f"<b>Cantidad de datáfonos incluidos:</b> {len(filtered_df)}", styles["BodyJustifyFiltered"]),
         Spacer(1, 8),
     ]
 
@@ -1038,15 +1079,30 @@ def build_resguardo_filtrado_pdf_bytes(filtered_df, tipo_documento, numero_docum
     ]))
     story.append(inventory_table)
 
+    entregado_por = normalize_text(nombre_entrega) or "Nombre y firma"
     signature_table = Table([
         [
-            Paragraph("__________________________________<br/>Responsable<br/>" + escape_html(nombre_responsable), styles["SignatureFiltered"]),
-            Paragraph("__________________________________<br/>Entregado por<br/>Nombre y firma", styles["SignatureFiltered"]),
-            Paragraph("__________________________________<br/>Auditoría / Administración<br/>Nombre y firma", styles["SignatureFiltered"]),
+            Paragraph("<b>Responsable</b>", styles["SignatureFiltered"]),
+            "",
+            Paragraph("<b>Entregado por</b>", styles["SignatureFiltered"]),
         ],
-    ], colWidths=[3.0 * inch, 3.0 * inch, 3.0 * inch], rowHeights=[0.85 * inch])
+        [
+            Paragraph(escape_html(nombre_responsable), styles["SignatureFiltered"]),
+            "",
+            Paragraph(escape_html(entregado_por), styles["SignatureFiltered"]),
+        ],
+        [
+            "",
+            "",
+            Paragraph("Auditoría / Administración", styles["SignatureFiltered"]),
+        ],
+    ], colWidths=[4.0 * inch, 0.9 * inch, 4.0 * inch], rowHeights=[0.34 * inch, 0.28 * inch, 0.24 * inch])
     signature_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("LINEABOVE", (0, 0), (0, 0), 0.75, colors.HexColor("#0F172A")),
+        ("LINEABOVE", (2, 0), (2, 0), 0.75, colors.HexColor("#0F172A")),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
     ]))
     story.append(KeepTogether([
@@ -1438,7 +1494,7 @@ def dashboard():
     departamentos = cfg("Departamentos")
     estatus_list = cfg("Estatus")
 
-    st.markdown("### Panel ejecutivo")
+    st.markdown("### Dashboard")
 
     filtered = apply_common_filters(df, hoteles, departamentos, estatus_list, prefix="dash")
 
@@ -1469,55 +1525,82 @@ def dashboard():
     c6.metric("Cambios del mes", cambios_mes)
 
     st.divider()
+    st.markdown("### Gráficos principales")
 
-    col_a, col_b = st.columns(2)
-    with col_a:
+    pie_col, bar_col = st.columns([0.95, 1.55])
+    with pie_col:
         with st.container(border=True):
-            st.subheader("Distribución por hotel")
+            st.subheader("Pastel por estatus")
             if not filtered.empty:
-                chart = filtered.groupby("hotel").size().reset_index(name="Cantidad").sort_values("Cantidad", ascending=False)
-                color_map = palette_for(chart["hotel"].tolist())
+                status_chart = (
+                    filtered.groupby("estatus")
+                    .size()
+                    .reset_index(name="Cantidad")
+                    .sort_values("Cantidad", ascending=False)
+                )
+                color_map = {
+                    status: STATUS_COLORS.get(status, DASHBOARD_PALETTE[idx % len(DASHBOARD_PALETTE)])
+                    for idx, status in enumerate(status_chart["estatus"].tolist())
+                }
+                st.caption(f"{total} datafonos en el filtro actual")
                 st.altair_chart(
-                    colored_bar_chart(chart, "hotel", "Cantidad", color_map, horizontal=True),
+                    pie_chart(status_chart, "estatus", "Cantidad", color_map, height=420),
                     use_container_width=True
                 )
             else:
                 st.info("No hay datos con los filtros seleccionados.")
 
-    with col_b:
+    with bar_col:
         with st.container(border=True):
-            st.subheader("Distribución por estatus")
+            st.subheader("Barras por hotel")
             if not filtered.empty:
-                chart = filtered.groupby("estatus").size().reset_index(name="Cantidad").sort_values("Cantidad", ascending=False)
-                color_map = {status: STATUS_COLORS.get(status, DASHBOARD_PALETTE[idx % len(DASHBOARD_PALETTE)]) for idx, status in enumerate(chart["estatus"].tolist())}
+                hotel_chart = (
+                    filtered.groupby("hotel")
+                    .size()
+                    .reset_index(name="Cantidad")
+                    .sort_values("Cantidad", ascending=False)
+                    .head(12)
+                )
+                color_map = palette_for(hotel_chart["hotel"].tolist())
+                st.caption("Hoteles con mayor cantidad de datafonos")
                 st.altair_chart(
-                    donut_chart(chart, "estatus", "Cantidad", color_map),
+                    colored_bar_chart(
+                        hotel_chart,
+                        "hotel",
+                        "Cantidad",
+                        color_map,
+                        horizontal=True,
+                        height=chart_height_for_rows(hotel_chart, minimum=420),
+                    ),
                     use_container_width=True
                 )
             else:
                 st.info("No hay datos con los filtros seleccionados.")
 
-    col_c, col_d = st.columns(2)
-    with col_c:
-        with st.container(border=True):
-            st.subheader("Datafonos por departamento")
-            if not filtered.empty:
-                dept = filtered.groupby("departamento").size().reset_index(name="Cantidad").sort_values("Cantidad", ascending=False)
-                color_map = palette_for(dept["departamento"].tolist())
-                st.altair_chart(
-                    colored_bar_chart(dept, "departamento", "Cantidad", color_map, horizontal=False),
-                    use_container_width=True
-                )
-            else:
-                st.info("Sin datos.")
-
-    with col_d:
-        with st.container(border=True):
-            st.subheader("Últimos movimientos filtrados")
-            if hist_filtrado.empty:
-                st.info("No hay movimientos relacionados con el filtro actual.")
-            else:
-                st.dataframe(hist_filtrado.tail(8).sort_index(ascending=False), use_container_width=True, hide_index=True)
+    with st.container(border=True):
+        st.subheader("Barras por departamento")
+        if not filtered.empty:
+            dept_chart = (
+                filtered.groupby("departamento")
+                .size()
+                .reset_index(name="Cantidad")
+                .sort_values("Cantidad", ascending=False)
+                .head(12)
+            )
+            color_map = palette_for(dept_chart["departamento"].tolist())
+            st.altair_chart(
+                colored_bar_chart(
+                    dept_chart,
+                    "departamento",
+                    "Cantidad",
+                    color_map,
+                    horizontal=True,
+                    height=chart_height_for_rows(dept_chart, minimum=380),
+                ),
+                use_container_width=True
+            )
+        else:
+            st.info("Sin datos.")
 
     st.divider()
     st.subheader("Detalle filtrado")
@@ -2138,7 +2221,7 @@ def dialog_bitacora_terminal(row_id):
 def dialog_resguardo_filtrado():
     filtered_df = st.session_state.get("resguardo_filtrado_df")
     if not isinstance(filtered_df, pd.DataFrame) or filtered_df.empty:
-        st.warning("No hay datafonos filtrados para generar el resguardo.")
+        st.warning("No hay datáfonos filtrados para generar el resguardo.")
         if st.button("Cerrar", use_container_width=True):
             st.rerun()
         return
@@ -2159,8 +2242,8 @@ def dialog_resguardo_filtrado():
         responsables = [value for value in filtered_df["responsable"].map(normalize_text).unique().tolist() if value]
     responsable_default = responsables[0] if len(responsables) == 1 else ""
 
-    st.markdown("### Resguardo de datafonos filtrados")
-    st.caption(f"Fecha del resguardo: {format_spanish_date(date.today())}. Datafonos incluidos: {len(filtered_df)}.")
+    st.markdown("### Resguardo de datáfonos filtrados")
+    st.caption(f"Fecha del resguardo: {format_spanish_date(date.today())}. Datáfonos incluidos: {len(filtered_df)}.")
 
     preview_columns = [
         col for col in [
@@ -2180,6 +2263,7 @@ def dialog_resguardo_filtrado():
         nombre_responsable = c3.text_input("Nombre del responsable", value=responsable_default)
         puesto_responsable = c4.text_input("Puesto del responsable")
 
+        nombre_entrega = st.text_input("Nombre de quien entrega", value="", help="Opcional. Personal de Auditoría / Administración.")
         observacion_resguardo = st.text_area("Observación del resguardo", value="")
 
         b1, b2 = st.columns(2)
@@ -2195,6 +2279,7 @@ def dialog_resguardo_filtrado():
         numero_documento = normalize_text(numero_documento)
         nombre_responsable = normalize_text(nombre_responsable)
         puesto_responsable = normalize_text(puesto_responsable)
+        nombre_entrega = normalize_text(nombre_entrega)
         observacion_resguardo = normalize_text(observacion_resguardo)
 
         if not numero_documento or not nombre_responsable or not puesto_responsable:
@@ -2208,6 +2293,7 @@ def dialog_resguardo_filtrado():
                 numero_documento=numero_documento,
                 nombre_responsable=nombre_responsable,
                 puesto_responsable=puesto_responsable,
+                nombre_entrega=nombre_entrega,
                 observacion_resguardo=observacion_resguardo,
             )
         except ModuleNotFoundError:
@@ -2257,6 +2343,7 @@ def dialog_resguardo_terminal(row_id):
         nombre_responsable = c3.text_input("Nombre del responsable", value=normalize_text(row["responsable"]))
         puesto_responsable = c4.text_input("Puesto del responsable")
 
+        nombre_entrega = st.text_input("Nombre de quien entrega", value="", help="Opcional. Personal de Auditoría / Administración.")
         observacion_resguardo = st.text_area("Observación del resguardo", value="")
 
         b1, b2 = st.columns(2)
@@ -2272,6 +2359,8 @@ def dialog_resguardo_terminal(row_id):
         numero_documento = normalize_text(numero_documento)
         nombre_responsable = normalize_text(nombre_responsable)
         puesto_responsable = normalize_text(puesto_responsable)
+        nombre_entrega = normalize_text(nombre_entrega)
+        observacion_resguardo = normalize_text(observacion_resguardo)
 
         if not numero_documento or not nombre_responsable or not puesto_responsable:
             st.error("Completa documento, nombre y puesto del responsable.")
@@ -2284,6 +2373,7 @@ def dialog_resguardo_terminal(row_id):
                 numero_documento=numero_documento,
                 nombre_responsable=nombre_responsable,
                 puesto_responsable=puesto_responsable,
+                nombre_entrega=nombre_entrega,
                 observacion_resguardo=observacion_resguardo,
             )
         except ModuleNotFoundError:

@@ -256,7 +256,6 @@ function renderDashboard() {
   const statusCounts = countBy(inventory, "estatus");
   const activeRate = metrics.total ? Math.round((metrics.activos / metrics.total) * 100) : 0;
   const custodyRate = metrics.total ? Math.round((metrics.resguardo / metrics.total) * 100) : 0;
-  const recentChanges = [...state.history].reverse().slice(0, 8);
   const alerts = [
     ["En reparación", metrics.reparacion, "Equipos que requieren seguimiento"],
     ["Sustituidos", metrics.sustituidos, "Equipos con cambio operativo"],
@@ -292,12 +291,19 @@ function renderDashboard() {
       ${metric("Cambios del mes", metrics.cambiosMes, currentMonth)}
     </section>
     <section class="dashboard-layout">
-      <div class="panel status-panel">
+      <div class="panel status-panel dashboard-chart">
         <div class="panel-head">
-          <h3>Distribución por estatus</h3>
+          <h3>Gráfico de pastel por estatus</h3>
           <span>${metrics.total} equipos</span>
         </div>
         ${renderStatusOverview(statusCounts, metrics.total)}
+      </div>
+      <div class="panel dashboard-chart bar-chart-panel">
+        <div class="panel-head">
+          <h3>Gráfico de barras por hotel</h3>
+          <span>${hotelCounts.length} hoteles</span>
+        </div>
+        ${renderBars(hotelCounts, { limit: 8, large: true })}
       </div>
       <div class="panel">
         <div class="panel-head">
@@ -308,24 +314,10 @@ function renderDashboard() {
       </div>
       <div class="panel">
         <div class="panel-head">
-          <h3>Top hoteles</h3>
-          <span>${hotelCounts.length} hoteles</span>
-        </div>
-        ${renderBars(hotelCounts)}
-      </div>
-      <div class="panel">
-        <div class="panel-head">
           <h3>Top departamentos</h3>
           <span>${departmentCounts.length} áreas</span>
         </div>
-        ${renderBars(departmentCounts)}
-      </div>
-      <div class="panel span-2">
-        <div class="panel-head">
-          <h3>Últimos movimientos</h3>
-          <span>${recentChanges.length} recientes</span>
-        </div>
-        ${renderRecentChanges(recentChanges)}
+        ${renderBars(departmentCounts, { limit: 8 })}
       </div>
     </section>
   `;
@@ -651,12 +643,13 @@ function renderResguardoForm() {
   const responsableDefault = responsables.length === 1 ? responsables[0] : "";
   return `
     <form data-form="resguardo">
-      <p class="muted">Se generará con los ${rows.length} datafonos filtrados/visibles. Fecha: ${formatDate(todayIso())}.</p>
+      <p class="muted">Se generará con los ${rows.length} datáfonos filtrados/visibles. Fecha: ${formatDate(todayIso())}.</p>
       <div class="grid-2">
-        ${selectField("tipo_documento", "Documento", ["Cédula", "Pasaporte"], "Cédula")}
+        ${selectField("tipo_documento", "Tipo de documento", ["Cédula", "Pasaporte"], "Cédula")}
         ${field("numero_documento", "Cédula o pasaporte")}
         ${field("nombre_responsable", "Nombre del responsable", responsableDefault)}
         ${field("puesto_responsable", "Puesto del responsable")}
+        ${field("nombre_entrega", "Nombre de quien entrega")}
       </div>
       ${textareaField("observacion_resguardo", "Observación del resguardo")}
       ${modalButtons("Generar PDF")}
@@ -1176,16 +1169,21 @@ function countBy(rows, key) {
 function renderStatusOverview(items, total) {
   if (!items.length) return `<p class="muted">Sin datos.</p>`;
   let current = 0;
+  const safeTotal = total || items.reduce((sum, [, value]) => sum + value, 0);
   const segments = items.map(([label, value], index) => {
     const start = current;
-    const size = total ? (value / total) * 100 : 0;
+    const size = safeTotal ? (value / safeTotal) * 100 : 0;
     current += size;
     return `${dashboardColor(label, index)} ${start}% ${current}%`;
   });
   return `
     <div class="status-overview">
-      <div class="donut" style="background:conic-gradient(${segments.join(", ")})">
-        <span>${total}</span>
+      <div class="pie-wrap">
+        <div class="pie-chart" style="background:conic-gradient(${segments.join(", ")})"></div>
+        <div class="pie-caption">
+          <strong>${safeTotal}</strong>
+          <span>datafonos</span>
+        </div>
       </div>
       <div class="status-legend">
         ${items.map(([label, value], index) => `
@@ -1193,6 +1191,7 @@ function renderStatusOverview(items, total) {
             <i style="background:${dashboardColor(label, index)}"></i>
             <span>${escapeHtml(label || "Sin valor")}</span>
             <strong>${value}</strong>
+            <small>${safeTotal ? Math.round((value / safeTotal) * 100) : 0}%</small>
           </div>
         `).join("")}
       </div>
@@ -1217,30 +1216,17 @@ function renderAlertList(items) {
   `;
 }
 
-function renderRecentChanges(rows) {
-  if (!rows.length) return `<p class="muted">Sin movimientos recientes.</p>`;
-  return `
-    <div class="recent-list">
-      ${rows.map((row) => `
-        <div class="recent-item">
-          <span>${escapeHtml(row.fecha)}</span>
-          <strong>${escapeHtml(row.terminal_nueva || row.terminal_anterior || "Sin terminal")}</strong>
-          <em>${escapeHtml(row.motivo || "Movimiento")}</em>
-          <small>${escapeHtml(row.responsable || row.departamento || "")}</small>
-        </div>
-      `).join("")}
-    </div>
-  `;
-}
-
-function renderBars(items) {
+function renderBars(items, options = {}) {
   if (!items.length) return `<p class="muted">Sin datos.</p>`;
+  const limit = options.limit || 10;
+  const rows = items.slice(0, limit);
   const max = Math.max(...items.map(([, value]) => value));
-  return `<div class="chart-list">${items.slice(0, 10).map(([label, value]) => `
+  return `<div class="chart-list ${options.large ? "chart-list-large" : ""}">${rows.map(([label, value]) => `
     <div class="bar-row" style="--bar-color:${dashboardColor(label)}">
       <span>${escapeHtml(label)}</span>
       <div class="bar"><span style="width:${Math.max(4, (value / max) * 100)}%"></span></div>
       <strong>${value}</strong>
+      ${options.large ? `<small>${Math.round((value / max) * 100)}%</small>` : ""}
     </div>
   `).join("")}</div>`;
 }
@@ -1305,79 +1291,123 @@ function exportExcel(name, rows, columns) {
 
 function generateResguardoPdf(form, rows) {
   if (!rows.length) {
-    showToast("No hay datafonos filtrados para generar el resguardo.", "error");
+    showToast("No hay datáfonos filtrados para generar el resguardo.", "error");
     return;
   }
   const pdf = new SimplePdf();
-  const title = "CARTA DE RESGUARDO DE DATAFONOS";
+  const title = "CARTA DE RESGUARDO DE DATÁFONOS";
   const dateText = formatDate(todayIso());
+  const margin = 42;
+  const pageTop = 565;
+  const pageBottom = 40;
+  const contentWidth = pdf.width - (margin * 2);
+  const bodyText = "Por medio de la presente se deja constancia de que la persona indicada en este documento recibe en calidad de resguardo los datáfonos detallados más adelante, los cuales serán utilizados exclusivamente para fines operativos de la empresa. La persona responsable se compromete a custodiar dichos equipos, utilizarlos de forma adecuada, mantenerlos en buen estado y reportar oportunamente cualquier cambio, pérdida, daño, traslado o devolución.";
+  const tableColumns = [
+    ["numero_terminal", "Terminal", 62],
+    ["numero_afiliado", "Afiliado", 88],
+    ["hotel", "Hotel", 82],
+    ["area", "Área", 70],
+    ["departamento", "Departamento", 104],
+    ["estatus", "Estatus", 67],
+    ["fecha_asignacion", "Fecha asignación", 92],
+    ["observacion", "Observación", 137]
+  ];
+
   const startPage = () => {
     pdf.addPage();
-    pdf.text(title, 396, 558, 14, "bold", "center");
-    pdf.text(`Santo Domingo, ${dateText}`, 720, 528, 9, "normal", "right");
-    pdf.wrapText("Por medio de la presente se deja constancia de la entrega en calidad de resguardo de los datafonos detallados en este documento. La persona responsable declara recibir los equipos para uso operativo, comprometiéndose a custodiarlos, utilizarlos de forma adecuada y reportar oportunamente cualquier cambio, pérdida, daño o devolución.", 50, 500, 690, 9, 12);
+    pdf.text(title, pdf.width / 2, pageTop, 16, "bold", "center", "#0f172a");
+    pdf.text(`Santo Domingo, ${dateText}`, pdf.width - margin, 532, 10, "normal", "right", "#334155");
+    return pdf.wrapText(bodyText, margin, 504, contentWidth, 9.6, 13, {
+      align: "justify",
+      color: "#111827"
+    }) - 14;
   };
-  startPage();
-  let y = 440;
-  pdf.text(`Cantidad de datafonos incluidos: ${rows.length}`, 50, y, 10, "bold");
-  y -= 24;
-  pdf.text(`Documento: ${form.tipo_documento} ${form.numero_documento}`, 50, y, 9);
-  pdf.text(`Responsable: ${form.nombre_responsable}`, 330, y, 9);
-  y -= 16;
-  pdf.text(`Puesto: ${form.puesto_responsable}`, 50, y, 9);
-  if (form.observacion_resguardo) pdf.wrapText(`Observación: ${form.observacion_resguardo}`, 330, y, 390, 9, 11);
-  y -= 30;
-  const headers = ["Terminal", "Afiliado", "Hotel", "Área", "Depto.", "Estatus", "Fecha"];
-  const widths = [78, 100, 82, 82, 108, 84, 88];
-  const rowHeight = 18;
-  const drawHeader = () => {
-    let x = 50;
-    headers.forEach((header, index) => {
-      pdf.rect(x, y - 4, widths[index], rowHeight, true);
-      pdf.text(header, x + 4, y + 2, 7, "bold");
-      x += widths[index];
+
+  const drawResponsibleTable = (y) => {
+    const data = [
+      ["Tipo de documento", cleanPdfValue(form.tipo_documento), "Documento", cleanPdfValue(form.numero_documento)],
+      ["Responsable", cleanPdfValue(form.nombre_responsable), "Puesto", cleanPdfValue(form.puesto_responsable)],
+      ["Fecha de resguardo", dateText, "Observación", cleanPdfValue(form.observacion_resguardo)]
+    ];
+    return pdf.drawKeyValueTable(data, margin, y, [118, 200, 110, 274]);
+  };
+
+  const drawTableHeader = (y) => {
+    let x = margin;
+    const headerHeight = 22;
+    tableColumns.forEach(([, label, width]) => {
+      pdf.rect(x, y - headerHeight, width, headerHeight, { fill: "#0f172a", stroke: "#0f172a" });
+      pdf.text(label, x + 5, y - 14, 7.2, "bold", "left", "#ffffff");
+      x += width;
     });
-    y -= rowHeight;
+    return y - headerHeight;
   };
-  drawHeader();
-  rows.forEach((row) => {
-    if (y < 92) {
-      startPage();
-      y = 430;
-      drawHeader();
+
+  const drawInventoryRow = (row, index, y) => {
+    const paddingX = 5;
+    const paddingTop = 5;
+    const paddingBottom = 4;
+    const lineHeight = 8.6;
+    const cellLines = tableColumns.map(([key, , width]) => (
+      pdf.splitText(cleanPdfValue(row[key]), width - (paddingX * 2), 7.2, key === "observacion" ? 4 : 2)
+    ));
+    const rowHeight = Math.max(19, paddingTop + paddingBottom + (Math.max(...cellLines.map((lines) => lines.length)) * lineHeight));
+    if (y - rowHeight < pageBottom) {
+      pdf.addPage();
+      y = pageTop;
+      y = drawTableHeader(y);
     }
-    let x = 50;
-    const values = [row.numero_terminal, row.numero_afiliado, row.hotel, row.area, row.departamento, row.estatus, row.fecha_asignacion];
-    values.forEach((value, index) => {
-      pdf.strokeRect(x, y - 4, widths[index], rowHeight);
-      pdf.text(truncate(value, index === 4 ? 18 : 14), x + 4, y + 2, 7);
-      x += widths[index];
+    const fill = index % 2 === 0 ? "#ffffff" : "#f8fafc";
+    let x = margin;
+    tableColumns.forEach(([, , width], colIndex) => {
+      pdf.rect(x, y - rowHeight, width, rowHeight, { fill, stroke: "#cbd5e1", lineWidth: 0.35 });
+      cellLines[colIndex].forEach((line, lineIndex) => {
+        pdf.text(line, x + paddingX, y - paddingTop - 7 - (lineIndex * lineHeight), 7.2, "normal", "left", "#0f172a");
+      });
+      x += width;
     });
-    y -= rowHeight;
-  });
-  if (y < 120) {
-    pdf.addPage();
-    y = 470;
-  }
-  y -= 28;
-  pdf.text("Firmas", 396, y, 13, "bold", "center");
-  y -= 48;
-  pdf.text("______________________________", 185, y, 10, "normal", "center");
-  pdf.text("______________________________", 396, y, 10, "normal", "center");
-  pdf.text("______________________________", 607, y, 10, "normal", "center");
+    return y - rowHeight;
+  };
+
+  const drawSignatures = (y) => {
+    const needed = 106;
+    if (y - needed < pageBottom) {
+      pdf.addPage();
+      y = pageTop;
+    }
+    y -= 18;
+    pdf.text("Firmas", pdf.width / 2, y, 14, "bold", "center", "#0f172a");
+    y -= 42;
+    const centers = [250, 542];
+    const labels = [
+      ["Responsable", cleanPdfValue(form.nombre_responsable) || "Nombre y firma", ""],
+      ["Entregado por", cleanPdfValue(form.nombre_entrega) || "Nombre y firma", "Auditoría / Administración"]
+    ];
+    centers.forEach((center, index) => {
+      pdf.line(center - 96, y, center + 96, y, "#0f172a", 0.8);
+      pdf.text(labels[index][0], center, y - 16, 9, "bold", "center", "#111827");
+      pdf.text(labels[index][1], center, y - 30, 8.5, "normal", "center", "#334155");
+      if (labels[index][2]) pdf.text(labels[index][2], center, y - 43, 8, "normal", "center", "#64748b");
+    });
+  };
+
+  let y = startPage();
+  pdf.text(`Cantidad de datáfonos incluidos: ${rows.length}`, margin, y, 11, "bold", "left", "#0f172a");
+  y -= 18;
+  y = drawResponsibleTable(y);
   y -= 14;
-  pdf.text("Responsable", 185, y, 9, "normal", "center");
-  pdf.text("Entregado por", 396, y, 9, "normal", "center");
-  pdf.text("Auditoría / Administración", 607, y, 9, "normal", "center");
-  y -= 13;
-  pdf.text(form.nombre_responsable || "Nombre y firma", 185, y, 8, "normal", "center");
-  pdf.text("Nombre y firma", 396, y, 8, "normal", "center");
-  pdf.text("Nombre y firma", 607, y, 8, "normal", "center");
+  y = drawTableHeader(y);
+  rows.forEach((row, index) => {
+    y = drawInventoryRow(row, index, y);
+  });
+  drawSignatures(y);
   downloadBlob(`resguardo_datafonos_filtrados_${todayIso()}.pdf`, pdf.blob());
 }
 
 class SimplePdf {
   constructor() {
+    this.width = 792;
+    this.height = 612;
     this.pages = [];
     this.current = null;
   }
@@ -1388,34 +1418,106 @@ class SimplePdf {
   fontName(weight) {
     return weight === "bold" ? "F2" : "F1";
   }
-  text(value, x, y, size = 10, weight = "normal", align = "left") {
-    const safe = String(value ?? "");
-    const approxWidth = safe.length * size * 0.45;
-    const drawX = align === "center" ? x - approxWidth / 2 : align === "right" ? x - approxWidth : x;
-    this.current.push(`BT /${this.fontName(weight)} ${size} Tf 1 0 0 1 ${round(drawX)} ${round(y)} Tm <${utf16Hex(safe)}> Tj ET`);
+  setFillColor(color) {
+    const [r, g, b] = pdfColor(color);
+    this.current.push(`${r} ${g} ${b} rg`);
   }
-  wrapText(value, x, y, width, size = 10, leading = 12) {
-    const words = String(value || "").split(/\s+/);
+  setStrokeColor(color) {
+    const [r, g, b] = pdfColor(color);
+    this.current.push(`${r} ${g} ${b} RG`);
+  }
+  text(value, x, y, size = 10, weight = "normal", align = "left", color = "#000000") {
+    const safe = cleanPdfValue(value);
+    if (!safe) return;
+    const drawX = align === "center"
+      ? x - (this.textWidth(safe, size, weight) / 2)
+      : align === "right"
+        ? x - this.textWidth(safe, size, weight)
+        : x;
+    this.setFillColor(color);
+    this.current.push(`BT /${this.fontName(weight)} ${round(size)} Tf 1 0 0 1 ${round(drawX)} ${round(y)} Tm <${winAnsiHex(safe)}> Tj ET`);
+  }
+  textWidth(value, size = 10, weight = "normal") {
+    const ratio = weight === "bold" ? 0.53 : 0.5;
+    return String(value || "").length * size * ratio;
+  }
+  splitText(value, width, size = 10, maxLines = Infinity) {
+    const text = cleanPdfValue(value);
+    if (!text) return [""];
+    const words = text.split(/\s+/);
+    const lines = [];
     let line = "";
-    const maxChars = Math.max(20, Math.floor(width / (size * 0.48)));
     words.forEach((word) => {
       const candidate = line ? `${line} ${word}` : word;
-      if (candidate.length > maxChars) {
-        this.text(line, x, y, size);
-        y -= leading;
-        line = word;
-      } else {
+      if (this.textWidth(candidate, size) <= width) {
         line = candidate;
+        return;
+      }
+      if (line) lines.push(line);
+      line = word;
+      while (this.textWidth(line, size) > width && line.length > 1) {
+        let cut = line.length - 1;
+        while (cut > 1 && this.textWidth(`${line.slice(0, cut)}...`, size) > width) cut -= 1;
+        lines.push(`${line.slice(0, cut)}...`);
+        line = line.slice(cut);
       }
     });
-    if (line) this.text(line, x, y, size);
+    if (line) lines.push(line);
+    if (lines.length <= maxLines) return lines;
+    const clipped = lines.slice(0, maxLines);
+    clipped[maxLines - 1] = truncateToWidth(`${clipped[maxLines - 1]}...`, width, size, this);
+    return clipped;
   }
-  rect(x, y, w, h, fill = false) {
-    this.current.push(`0.07 0.09 0.16 rg ${round(x)} ${round(y)} ${round(w)} ${round(h)} re ${fill ? "f" : "S"}`);
-    if (fill) this.current.push("0 0 0 rg");
+  wrapText(value, x, y, width, size = 10, leading = 13, options = {}) {
+    const lines = this.splitText(value, width, size);
+    lines.forEach((line) => {
+      this.text(line, x, y, size, options.weight || "normal", options.align || "left", options.color || "#000000");
+      y -= leading;
+    });
+    return y;
   }
-  strokeRect(x, y, w, h) {
-    this.current.push(`0.8 0.84 0.9 RG ${round(x)} ${round(y)} ${round(w)} ${round(h)} re S 0 0 0 RG`);
+  rect(x, y, w, h, options = {}) {
+    const fill = options.fill || null;
+    const stroke = options.stroke || "#cbd5e1";
+    const lineWidth = options.lineWidth ?? 0.5;
+    this.current.push(`${round(lineWidth)} w`);
+    if (fill) {
+      this.setFillColor(fill);
+      if (stroke) {
+        this.setStrokeColor(stroke);
+        this.current.push(`${round(x)} ${round(y)} ${round(w)} ${round(h)} re B`);
+      } else {
+        this.current.push(`${round(x)} ${round(y)} ${round(w)} ${round(h)} re f`);
+      }
+    } else {
+      this.setStrokeColor(stroke);
+      this.current.push(`${round(x)} ${round(y)} ${round(w)} ${round(h)} re S`);
+    }
+  }
+  line(x1, y1, x2, y2, color = "#000000", lineWidth = 0.8) {
+    this.setStrokeColor(color);
+    this.current.push(`${round(lineWidth)} w ${round(x1)} ${round(y1)} m ${round(x2)} ${round(y2)} l S`);
+  }
+  drawKeyValueTable(rows, x, y, widths) {
+    const rowHeight = 24;
+    rows.forEach((row) => {
+      let cx = x;
+      row.forEach((value, index) => {
+        const isLabel = index % 2 === 0;
+        this.rect(cx, y - rowHeight, widths[index], rowHeight, {
+          fill: isLabel ? "#f1f5f9" : "#ffffff",
+          stroke: "#cbd5e1",
+          lineWidth: 0.45
+        });
+        const lines = this.splitText(value, widths[index] - 12, 8.4, 2);
+        lines.forEach((line, lineIndex) => {
+          this.text(line, cx + 6, y - 10 - (lineIndex * 9.2), 8.3, isLabel ? "bold" : "normal", "left", isLabel ? "#0f172a" : "#111827");
+        });
+        cx += widths[index];
+      });
+      y -= rowHeight;
+    });
+    return y;
   }
   blob() {
     const objects = [];
@@ -1425,13 +1527,13 @@ class SimplePdf {
     };
     const catalogId = add("<< /Type /Catalog /Pages 2 0 R >>");
     const pagesPlaceholderId = add("");
-    const font1Id = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-    const font2Id = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>");
+    const font1Id = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+    const font2Id = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
     const pageIds = [];
     this.pages.forEach((commands) => {
       const stream = commands.join("\n");
       const contentId = add(`<< /Length ${new TextEncoder().encode(stream).length} >>\nstream\n${stream}\nendstream`);
-      const pageId = add(`<< /Type /Page /Parent ${pagesPlaceholderId} 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 ${font1Id} 0 R /F2 ${font2Id} 0 R >> >> /Contents ${contentId} 0 R >>`);
+      const pageId = add(`<< /Type /Page /Parent ${pagesPlaceholderId} 0 R /MediaBox [0 0 ${this.width} ${this.height}] /Resources << /Font << /F1 ${font1Id} 0 R /F2 ${font2Id} 0 R >> >> /Contents ${contentId} 0 R >>`);
       pageIds.push(pageId);
     });
     objects[pagesPlaceholderId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`;
@@ -1451,11 +1553,60 @@ class SimplePdf {
   }
 }
 
-function utf16Hex(value) {
-  const bytes = [0xfe, 0xff];
-  for (const char of String(value || "")) {
+function cleanPdfValue(value) {
+  if (value === undefined || value === null || Number.isNaN(value)) return "";
+  return String(value).replace(/[‐‑‒–—]/g, "-").replace(/\s+/g, " ").trim();
+}
+
+function pdfColor(color) {
+  const clean = String(color || "#000000").replace("#", "");
+  const value = clean.length === 3
+    ? clean.split("").map((item) => item + item).join("")
+    : clean.padEnd(6, "0").slice(0, 6);
+  return [0, 2, 4].map((index) => round(parseInt(value.slice(index, index + 2), 16) / 255));
+}
+
+function truncateToWidth(value, width, size, pdf) {
+  let text = cleanPdfValue(value);
+  while (text.length > 1 && pdf.textWidth(text, size) > width) {
+    text = `${text.slice(0, -4)}...`;
+  }
+  return text;
+}
+
+function winAnsiHex(value) {
+  const extra = {
+    "€": 0x80,
+    "‚": 0x82,
+    "ƒ": 0x83,
+    "„": 0x84,
+    "…": 0x85,
+    "†": 0x86,
+    "‡": 0x87,
+    "ˆ": 0x88,
+    "‰": 0x89,
+    "Š": 0x8a,
+    "‹": 0x8b,
+    "Œ": 0x8c,
+    "Ž": 0x8e,
+    "‘": 0x91,
+    "’": 0x92,
+    "“": 0x93,
+    "”": 0x94,
+    "•": 0x95,
+    "™": 0x99,
+    "š": 0x9a,
+    "›": 0x9b,
+    "œ": 0x9c,
+    "ž": 0x9e,
+    "Ÿ": 0x9f
+  };
+  const bytes = [];
+  for (const char of cleanPdfValue(value)) {
     const code = char.charCodeAt(0);
-    bytes.push((code >> 8) & 0xff, code & 0xff);
+    if (extra[char]) bytes.push(extra[char]);
+    else if (code <= 0xff) bytes.push(code);
+    else bytes.push(0x3f);
   }
   return bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
 }

@@ -444,10 +444,10 @@ button {
 
 .dashboard-layout {
   display: grid;
-  grid-template-columns: 1.15fr 1fr 1fr;
+  grid-template-columns: minmax(340px, 0.9fr) minmax(480px, 1.45fr);
   gap: 14px;
   margin-top: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .span-2 {
@@ -474,58 +474,51 @@ button {
   font-weight: 700;
 }
 
+.dashboard-chart {
+  min-height: 420px;
+}
+
 .status-overview {
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+  gap: 24px;
   align-items: center;
+  min-height: 330px;
 }
 
 .status-panel .status-overview {
-  grid-template-columns: 132px minmax(0, 1fr);
-  gap: 12px;
-}
-
-.donut {
-  width: 150px;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  position: relative;
-}
-
-.donut::after {
-  content: "";
-  position: absolute;
-  width: 88px;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: #fff;
-}
-
-.donut span {
-  position: relative;
-  z-index: 1;
-  color: #0f3440;
-  font-size: 1.4rem;
-  font-weight: 850;
-}
-
-.status-panel .donut {
-  width: 118px;
-}
-
-.status-panel .donut::after {
-  width: 68px;
-}
-
-.status-panel .donut span {
-  font-size: 1.12rem;
+  gap: 22px;
 }
 
 .status-panel .status-legend {
+  gap: 9px;
+}
+
+.pie-wrap {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.pie-chart {
+  width: min(230px, 100%);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 1px solid #e2e8f0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65), 0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.pie-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
   gap: 6px;
+  color: #64748b;
+}
+
+.pie-caption strong {
+  color: #0f3440;
+  font-size: 1.45rem;
 }
 
 .status-legend {
@@ -534,17 +527,22 @@ button {
 }
 
 .status-legend div,
-.alert-item,
-.recent-item {
+.alert-item {
   display: grid;
   align-items: center;
 }
 
 .status-legend div {
-  grid-template-columns: 12px 1fr auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto auto;
   gap: 8px;
   color: #475569;
   font-size: 0.84rem;
+}
+
+.status-legend span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-legend i,
@@ -556,6 +554,11 @@ button {
 
 .status-legend strong {
   color: #0f172a;
+}
+
+.status-legend small {
+  color: #94a3b8;
+  font-weight: 750;
 }
 
 .alert-list {
@@ -590,40 +593,6 @@ button {
 .alert-item small {
   color: #64748b;
   margin-top: 2px;
-}
-
-.recent-list {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
-  gap: 10px;
-}
-
-.recent-item {
-  grid-template-rows: auto auto 1fr auto;
-  gap: 3px;
-  min-height: 118px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 10px;
-}
-
-.recent-item span {
-  color: #0f766e;
-  font-size: 0.72rem;
-  font-weight: 800;
-}
-
-.recent-item strong {
-  color: #0f172a;
-  font-size: 1rem;
-}
-
-.recent-item em,
-.recent-item small {
-  color: #64748b;
-  font-style: normal;
-  font-size: 0.78rem;
 }
 
 .table-shell {
@@ -988,6 +957,23 @@ table.data-table {
   font-size: 0.85rem;
 }
 
+.chart-list-large {
+  gap: 14px;
+}
+
+.chart-list-large .bar-row {
+  grid-template-columns: minmax(130px, 180px) 1fr 44px 42px;
+  font-size: 0.9rem;
+}
+
+.chart-list-large .bar-row > span,
+.bar-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bar {
   height: 10px;
   border-radius: 999px;
@@ -995,11 +981,21 @@ table.data-table {
   overflow: hidden;
 }
 
+.chart-list-large .bar {
+  height: 14px;
+}
+
 .bar span {
   display: block;
   height: 100%;
   background: var(--bar-color, var(--blue));
   border-radius: inherit;
+}
+
+.bar-row small {
+  color: #94a3b8;
+  font-weight: 750;
+  text-align: right;
 }
 
 @media (max-width: 920px) {
@@ -1010,7 +1006,7 @@ table.data-table {
     position: static;
     height: auto;
   }
-  .metrics, .grid-2, .grid-3, .grid-4, .dashboard-hero, .dashboard-layout, .recent-list {
+  .metrics, .grid-2, .grid-3, .grid-4, .dashboard-hero, .dashboard-layout {
     grid-template-columns: 1fr;
   }
   .span-2 {
