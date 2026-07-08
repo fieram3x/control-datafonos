@@ -12,6 +12,23 @@ const INVENTORY_COLUMNS = [
   ["observacion", "Observación"]
 ];
 
+const INVENTORY_TABLE_COLUMNS = INVENTORY_COLUMNS.filter(([key]) => key !== "observacion");
+const DATE_FILTER_COLUMNS = new Set(["fecha_asignacion", "fecha_cambio"]);
+const MONTH_NAMES_ES = [
+  "enero",
+  "febrero",
+  "marzo",
+  "abril",
+  "mayo",
+  "junio",
+  "julio",
+  "agosto",
+  "septiembre",
+  "octubre",
+  "noviembre",
+  "diciembre"
+];
+
 const HISTORY_COLUMNS = [
   ["fecha", "Fecha"],
   ["terminal_anterior", "Terminal anterior"],
@@ -159,6 +176,7 @@ function render() {
     ${state.filterMenu ? renderFilterMenu() : ""}
     ${state.modal ? renderModal() : ""}
   `;
+  syncFilterMenuControls();
   renderToast();
 }
 
@@ -338,7 +356,7 @@ function renderInventoryTable(rows) {
         <thead>
           <tr>
             <th class="actions-head"></th>
-            ${INVENTORY_COLUMNS.map(([key, label]) => `
+            ${INVENTORY_TABLE_COLUMNS.map(([key, label]) => `
               <th>
                 <div class="th-content">
                   <span>${label}</span>
@@ -351,7 +369,7 @@ function renderInventoryTable(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rows.length ? rows.map(renderInventoryRow).join("") : `<tr><td colspan="${INVENTORY_COLUMNS.length + 1}" class="empty">No hay datafonos para mostrar.</td></tr>`}
+          ${rows.length ? rows.map(renderInventoryRow).join("") : `<tr><td colspan="${INVENTORY_TABLE_COLUMNS.length + 1}" class="empty">No hay datafonos para mostrar.</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -370,7 +388,7 @@ function renderInventoryRow(row) {
           <span aria-hidden="true"></span>
         </button>
       </td>
-      ${INVENTORY_COLUMNS.map(([key]) => `<td>${key === "estatus" ? statusPill(row[key]) : escapeHtml(row[key])}</td>`).join("")}
+      ${INVENTORY_TABLE_COLUMNS.map(([key]) => `<td>${key === "estatus" ? statusPill(row[key]) : escapeHtml(row[key])}</td>`).join("")}
     </tr>
   `;
 }
@@ -380,7 +398,7 @@ function renderActionMenu() {
   return `
     <div class="action-menu" style="left:${x}px;top:${y}px">
       <button data-action="row-action" data-row-action="status" data-id="${escapeAttr(id)}">Editar estatus</button>
-      <button data-action="row-action" data-row-action="data" data-id="${escapeAttr(id)}">Editar datos</button>
+      <button data-action="row-action" data-row-action="data" data-id="${escapeAttr(id)}">Ver datos</button>
       <button data-action="row-action" data-row-action="history" data-id="${escapeAttr(id)}">Ver bitácora</button>
     </div>
   `;
@@ -388,13 +406,14 @@ function renderActionMenu() {
 
 function renderFilterMenu() {
   const { column, x, y } = state.filterMenu;
-  const values = uniqueValues(state.inventory, column)
-    .filter((value) => value.toLowerCase().includes(state.filterSearch.toLowerCase()));
-  const selected = state.inventoryFilters[column] || [];
-  const allSelected = !selected.length;
+  const values = uniqueValues(state.inventory, column);
+  const filterIsActive = hasInventoryFilter(column);
+  const selected = filterIsActive ? state.inventoryFilters[column] : values;
+  const allSelected = !filterIsActive;
+  const isDateFilter = DATE_FILTER_COLUMNS.has(column);
 
   return `
-    <div class="filter-menu" style="left:${x}px;top:${y}px">
+    <div class="filter-menu" data-filter-column="${escapeAttr(column)}" data-filter-type="${isDateFilter ? "date" : "text"}" style="left:${x}px;top:${y}px">
       <button data-action="sort-filter" data-column="${column}" data-dir="asc">Ordenar de A a Z</button>
       <button data-action="sort-filter" data-column="${column}" data-dir="desc">Ordenar de Z a A</button>
       <button data-action="clear-filter" data-column="${column}">Borrar filtro</button>
@@ -403,19 +422,67 @@ function renderFilterMenu() {
         <input type="checkbox" data-action="toggle-filter-all" data-column="${column}" ${allSelected ? "checked" : ""} />
         <span>(Seleccionar todo)</span>
       </label>
-      <div class="filter-list">
-        ${values.map((value) => `
-          <label class="check-row">
-            <input type="checkbox" data-action="toggle-filter-value" data-column="${column}" value="${escapeAttr(value)}" ${allSelected || selected.includes(value) ? "checked" : ""} />
-            <span>${escapeHtml(value || "(vacío)")}</span>
-          </label>
-        `).join("")}
+      <div class="filter-list ${isDateFilter ? "date-filter-list" : ""}">
+        ${isDateFilter ? renderDateFilterOptions(column, values, selected, allSelected) : renderTextFilterOptions(column, values, selected, allSelected)}
       </div>
       <div class="filter-actions">
-        <button class="btn primary" data-action="close-popups">Aceptar</button>
-        <button class="btn" data-action="close-popups">Cancelar</button>
+        <button class="btn primary" data-action="apply-filter">Aceptar</button>
+        <button class="btn" data-action="cancel-filter">Cancelar</button>
       </div>
     </div>
+  `;
+}
+
+function renderTextFilterOptions(column, values, selected, allSelected) {
+  return values.map((value) => `
+    <label class="check-row filter-choice">
+      <input type="checkbox" data-action="toggle-filter-value" data-column="${column}" value="${escapeAttr(value)}" ${allSelected || selected.includes(value) ? "checked" : ""} />
+      <span>${escapeHtml(value || "(vacío)")}</span>
+    </label>
+  `).join("");
+}
+
+function renderDateFilterOptions(column, values, selected, allSelected) {
+  const groups = buildDateFilterGroups(values);
+  return `
+    ${groups.years.map((year) => `
+      <div class="date-year-group" data-year-group="${escapeAttr(year.key)}">
+        <label class="check-row group-row year-row filter-choice">
+          <input type="checkbox" data-action="toggle-filter-year" data-column="${column}" data-year="${escapeAttr(year.key)}" />
+          <span>${escapeHtml(year.key)}</span>
+          <small>${year.values.length}</small>
+        </label>
+        <div class="date-nested">
+          ${year.months.map((month) => `
+            <div class="date-month-group" data-year="${escapeAttr(year.key)}" data-month-group="${escapeAttr(month.key)}">
+              <label class="check-row group-row month-row filter-choice">
+                <input type="checkbox" data-action="toggle-filter-month" data-column="${column}" data-year="${escapeAttr(year.key)}" data-month="${escapeAttr(month.key)}" />
+                <span>${escapeHtml(month.label)}</span>
+                <small>${month.values.length}</small>
+              </label>
+              <div class="date-nested days">
+                ${month.values.map((item) => renderDateValueOption(column, item, selected, allSelected)).join("")}
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `).join("")}
+    ${groups.withoutDate.map((value) => `
+      <label class="check-row filter-choice date-value-row">
+        <input type="checkbox" data-action="toggle-filter-value" data-column="${column}" value="${escapeAttr(value)}" ${allSelected || selected.includes(value) ? "checked" : ""} />
+        <span>${escapeHtml(value || "(sin fecha)")}</span>
+      </label>
+    `).join("")}
+  `;
+}
+
+function renderDateValueOption(column, item, selected, allSelected) {
+  return `
+    <label class="check-row filter-choice date-value-row">
+      <input type="checkbox" data-action="toggle-filter-value" data-column="${column}" value="${escapeAttr(item.value)}" data-year="${escapeAttr(item.year)}" data-month="${escapeAttr(item.monthKey)}" ${allSelected || selected.includes(item.value) ? "checked" : ""} />
+      <span>${escapeHtml(item.display)}</span>
+    </label>
   `;
 }
 
@@ -473,7 +540,7 @@ function renderModal() {
   const modal = state.modal;
   if (modal.type === "register") return modalShell("Registrar datafono", renderRegisterForm());
   if (modal.type === "status") return modalShell("Editar datafono", renderStatusForm(modal.row), "wide");
-  if (modal.type === "data") return modalShell("Editar datos del datafono", renderDataForm(modal.row), "wide");
+  if (modal.type === "data") return modalShell(modal.editing ? "Editar información del datafono" : "Datos del datafono", renderDataForm(modal.row, modal.editing), "wide");
   if (modal.type === "history") return modalShell("Bitácora de cambios", renderBitacora(modal.row), "wide");
   if (modal.type === "resguardo") return modalShell("Generar resguardo PDF", renderResguardoForm(), "wide");
   if (modal.type === "user-create") return modalShell("Nuevo usuario", renderUserCreateForm());
@@ -531,20 +598,24 @@ function renderStatusForm(row) {
   `;
 }
 
-function renderDataForm(row) {
+function renderDataForm(row, editing = false) {
+  const locked = editing ? "" : "disabled";
   return `
     <form data-form="data" data-id="${escapeAttr(row.id)}">
       <div class="grid-3">
-        ${field("numero_terminal", "Número Terminal *", row.numero_terminal)}
-        ${field("numero_afiliado", "Número Afiliado *", row.numero_afiliado)}
-        ${selectField("hotel", "Hotel *", state.config.Hoteles, row.hotel)}
-        ${selectField("area", "Área *", state.config.Areas, row.area)}
-        ${selectField("departamento", "Departamento *", state.config.Departamentos, row.departamento)}
-        ${field("responsable", "Responsable", row.responsable)}
-        ${field("fecha_asignacion", "Fecha asignación", row.fecha_asignacion || todayIso(), "date")}
+        ${field("numero_terminal", "Número Terminal *", row.numero_terminal, "text", locked)}
+        ${field("numero_afiliado", "Número Afiliado *", row.numero_afiliado, "text", locked)}
+        ${editing ? selectField("hotel", "Hotel *", state.config.Hoteles, row.hotel) : field("hotel_actual", "Hotel *", row.hotel, "text", "disabled")}
+        ${editing ? selectField("area", "Área *", state.config.Areas, row.area) : field("area_actual", "Área *", row.area, "text", "disabled")}
+        ${editing ? selectField("departamento", "Departamento *", state.config.Departamentos, row.departamento) : field("departamento_actual", "Departamento *", row.departamento, "text", "disabled")}
+        ${field("responsable", "Responsable", row.responsable, "text", locked)}
+        ${editing ? field("fecha_asignacion", "Fecha asignación", row.fecha_asignacion || todayIso(), "date") : field("fecha_asignacion_actual", "Fecha asignación", row.fecha_asignacion, "text", "disabled")}
+        ${field("estatus_actual", "Estatus", row.estatus, "text", "disabled")}
+        ${field("fecha_cambio_actual", "Fecha cambio", row.fecha_cambio, "text", "disabled")}
+        ${field("sustituido_por_actual", "Sustituido por", row.sustituido_por, "text", "disabled")}
       </div>
-      ${textareaField("observacion", "Observación", row.observacion)}
-      ${modalButtons("Guardar datos")}
+      ${textareaField("observacion", "Observación", row.observacion, locked)}
+      ${editing ? modalButtons("Guardar") : dataViewButtons()}
     </form>
   `;
 }
@@ -620,15 +691,15 @@ function renderUserPasswordForm(user) {
   `;
 }
 
-function field(name, label, value = "", type = "text") {
-  return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${escapeAttr(value)}" /></div>`;
+function field(name, label, value = "", type = "text", attrs = "") {
+  return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${escapeAttr(value)}" ${attrs} /></div>`;
 }
 
-function selectField(name, label, options = [], value = "") {
+function selectField(name, label, options = [], value = "", attrs = "") {
   return `
     <div class="field">
       <label>${label}</label>
-      <select name="${name}">
+      <select name="${name}" ${attrs}>
         <option value="">Seleccione</option>
         ${(options || []).map((option) => `<option value="${escapeAttr(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
       </select>
@@ -636,8 +707,8 @@ function selectField(name, label, options = [], value = "") {
   `;
 }
 
-function textareaField(name, label, value = "") {
-  return `<div class="field" style="margin-top:14px"><label>${label}</label><textarea name="${name}">${escapeHtml(value)}</textarea></div>`;
+function textareaField(name, label, value = "", attrs = "") {
+  return `<div class="field" style="margin-top:14px"><label>${label}</label><textarea name="${name}" ${attrs}>${escapeHtml(value)}</textarea></div>`;
 }
 
 function modalButtons(primaryText) {
@@ -649,9 +720,19 @@ function modalButtons(primaryText) {
   `;
 }
 
+function dataViewButtons() {
+  return `
+    <div class="grid-2" style="margin-top:16px">
+      <button class="btn primary" type="button" data-action="enable-data-edit">Editar información</button>
+      <button class="btn" type="button" data-action="close-modal">Cerrar</button>
+    </div>
+  `;
+}
+
 async function handleClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button) {
+    if (event.target.closest(".action-menu, .filter-menu, .modal")) return;
     const hadPopup = Boolean(state.actionMenu || state.filterMenu);
     state.actionMenu = null;
     state.filterMenu = null;
@@ -676,6 +757,9 @@ async function handleClick(event) {
   } else if (action === "close-modal") {
     state.modal = null;
     render();
+  } else if (action === "enable-data-edit") {
+    if (state.modal?.type === "data") state.modal.editing = true;
+    render();
   } else if (action === "row-menu") {
     const rect = button.getBoundingClientRect();
     state.actionMenu = {
@@ -689,7 +773,7 @@ async function handleClick(event) {
     const row = state.inventory.find((item) => item.id === button.dataset.id);
     state.actionMenu = null;
     if (button.dataset.rowAction === "status") state.modal = { type: "status", row };
-    if (button.dataset.rowAction === "data") state.modal = { type: "data", row };
+    if (button.dataset.rowAction === "data") state.modal = { type: "data", row, editing: false };
     if (button.dataset.rowAction === "history") state.modal = { type: "history", row };
     render();
   } else if (action === "open-filter") {
@@ -709,7 +793,9 @@ async function handleClick(event) {
     delete state.inventoryFilters[button.dataset.column];
     if (state.inventorySort?.column === button.dataset.column) state.inventorySort = null;
     render();
-  } else if (action === "close-popups") {
+  } else if (action === "apply-filter") {
+    applyCurrentFilter();
+  } else if (action === "cancel-filter" || action === "close-popups") {
     state.actionMenu = null;
     state.filterMenu = null;
     render();
@@ -769,22 +855,15 @@ async function submitApi(path, options, message) {
 function handleChange(event) {
   const target = event.target;
   const action = target.dataset.action;
+  const menu = target.closest(".filter-menu");
   if (action === "toggle-filter-all") {
-    if (target.checked) delete state.inventoryFilters[target.dataset.column];
-    else state.inventoryFilters[target.dataset.column] = [];
-    render();
+    setFilterValuesChecked(menu, target.checked);
+  } else if (action === "toggle-filter-year") {
+    setFilterValuesChecked(menu, target.checked, (input) => input.dataset.year === target.dataset.year);
+  } else if (action === "toggle-filter-month") {
+    setFilterValuesChecked(menu, target.checked, (input) => input.dataset.month === target.dataset.month);
   } else if (action === "toggle-filter-value") {
-    const column = target.dataset.column;
-    const selected = new Set(state.inventoryFilters[column] || []);
-    if (!state.inventoryFilters[column]) {
-      uniqueValues(state.inventory, column).forEach((value) => selected.add(value));
-    }
-    if (target.checked) selected.add(target.value);
-    else selected.delete(target.value);
-    const all = uniqueValues(state.inventory, column);
-    if (selected.size === all.length) delete state.inventoryFilters[column];
-    else state.inventoryFilters[column] = Array.from(selected);
-    render();
+    syncFilterMenuControls(menu);
   }
 }
 
@@ -792,7 +871,7 @@ function handleInput(event) {
   const target = event.target;
   if (target.dataset.action === "filter-search") {
     state.filterSearch = target.value;
-    render();
+    updateFilterMenuSearch(target.closest(".filter-menu"), target.value);
   } else if (target.dataset.action === "history-search") {
     state.historySearch = target.value;
     render();
@@ -814,11 +893,11 @@ function openModal(type, id) {
 function getFilteredInventory() {
   let rows = [...state.inventory];
   for (const [column, selected] of Object.entries(state.inventoryFilters)) {
-    if (selected.length) rows = rows.filter((row) => selected.includes(String(row[column] || "")));
+    rows = rows.filter((row) => selected.includes(String(row[column] || "").trim()));
   }
   if (state.inventorySort) {
     const { column, dir } = state.inventorySort;
-    rows.sort((a, b) => String(a[column] || "").localeCompare(String(b[column] || ""), "es", { numeric: true }) * (dir === "desc" ? -1 : 1));
+    rows.sort((a, b) => compareInventoryValues(a[column], b[column], column) * (dir === "desc" ? -1 : 1));
   }
   return rows;
 }
@@ -833,11 +912,200 @@ function getFilteredHistory() {
 }
 
 function isFilterActive(column) {
-  return Boolean((state.inventoryFilters[column] || []).length) || state.inventorySort?.column === column;
+  return hasInventoryFilter(column) || state.inventorySort?.column === column;
+}
+
+function hasInventoryFilter(column) {
+  return Object.prototype.hasOwnProperty.call(state.inventoryFilters, column);
 }
 
 function uniqueValues(rows, column) {
   return Array.from(new Set(rows.map((row) => String(row[column] || "").trim()))).sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+}
+
+function applyCurrentFilter() {
+  const menu = document.querySelector(".filter-menu");
+  if (!menu || !state.filterMenu) return;
+  const column = state.filterMenu.column;
+  const allValues = uniqueValues(state.inventory, column);
+  const selected = Array.from(menu.querySelectorAll('input[data-action="toggle-filter-value"]'))
+    .filter((input) => input.checked)
+    .map((input) => input.value);
+
+  if (selected.length === allValues.length) delete state.inventoryFilters[column];
+  else state.inventoryFilters[column] = selected;
+
+  state.actionMenu = null;
+  state.filterMenu = null;
+  state.filterSearch = "";
+  render();
+}
+
+function setFilterValuesChecked(menu, checked, predicate = () => true) {
+  if (!menu) return;
+  menu.querySelectorAll('input[data-action="toggle-filter-value"]').forEach((input) => {
+    if (predicate(input)) input.checked = checked;
+  });
+  syncFilterMenuControls(menu);
+}
+
+function syncFilterMenuControls(menu = document.querySelector(".filter-menu")) {
+  if (!menu) return;
+  const values = Array.from(menu.querySelectorAll('input[data-action="toggle-filter-value"]'));
+  const allToggle = menu.querySelector('input[data-action="toggle-filter-all"]');
+  syncCheckboxState(allToggle, values);
+
+  menu.querySelectorAll('input[data-action="toggle-filter-year"]').forEach((input) => {
+    syncCheckboxState(input, values.filter((value) => value.dataset.year === input.dataset.year));
+  });
+
+  menu.querySelectorAll('input[data-action="toggle-filter-month"]').forEach((input) => {
+    syncCheckboxState(input, values.filter((value) => value.dataset.month === input.dataset.month));
+  });
+}
+
+function syncCheckboxState(input, values) {
+  if (!input) return;
+  const checkedCount = values.filter((item) => item.checked).length;
+  input.checked = values.length > 0 && checkedCount === values.length;
+  input.indeterminate = checkedCount > 0 && checkedCount < values.length;
+}
+
+function updateFilterMenuSearch(menu, value) {
+  if (!menu) return;
+  const query = normalizeSearchText(value);
+  if (!query) {
+    menu.querySelectorAll("[hidden]").forEach((item) => { item.hidden = false; });
+    return;
+  }
+
+  if (menu.dataset.filterType !== "date") {
+    menu.querySelectorAll(".filter-choice").forEach((item) => {
+      item.hidden = !normalizeSearchText(item.textContent).includes(query);
+    });
+    return;
+  }
+
+  menu.querySelectorAll(".date-value-row").forEach((item) => {
+    item.hidden = !normalizeSearchText(item.textContent).includes(query);
+  });
+
+  menu.querySelectorAll(".date-month-group").forEach((group) => {
+    const row = group.querySelector(".month-row");
+    const rowMatches = normalizeSearchText(row?.textContent).includes(query);
+    const values = Array.from(group.querySelectorAll(".date-value-row"));
+    if (rowMatches) values.forEach((item) => { item.hidden = false; });
+    group.hidden = !rowMatches && !values.some((item) => !item.hidden);
+  });
+
+  menu.querySelectorAll(".date-year-group").forEach((group) => {
+    const row = group.querySelector(".year-row");
+    const rowMatches = normalizeSearchText(row?.textContent).includes(query);
+    const months = Array.from(group.querySelectorAll(".date-month-group"));
+    if (rowMatches) {
+      months.forEach((month) => {
+        month.hidden = false;
+        month.querySelectorAll(".date-value-row").forEach((item) => { item.hidden = false; });
+      });
+    }
+    group.hidden = !rowMatches && !months.some((month) => !month.hidden);
+  });
+}
+
+function buildDateFilterGroups(values) {
+  const years = new Map();
+  const withoutDate = [];
+
+  values.forEach((value) => {
+    const parts = parseDateParts(value);
+    if (!parts) {
+      withoutDate.push(value);
+      return;
+    }
+
+    if (!years.has(parts.year)) {
+      years.set(parts.year, { key: parts.year, values: [], months: new Map() });
+    }
+    const year = years.get(parts.year);
+    year.values.push(value);
+
+    if (!year.months.has(parts.monthKey)) {
+      year.months.set(parts.monthKey, { key: parts.monthKey, label: parts.monthLabel, values: [] });
+    }
+    year.months.get(parts.monthKey).values.push({ ...parts, value });
+  });
+
+  return {
+    years: Array.from(years.values())
+      .sort((a, b) => a.key.localeCompare(b.key, "es", { numeric: true }))
+      .map((year) => ({
+        ...year,
+        months: Array.from(year.months.values())
+          .sort((a, b) => a.key.localeCompare(b.key, "es", { numeric: true }))
+          .map((month) => ({
+            ...month,
+            values: month.values.sort((a, b) => a.value.localeCompare(b.value, "es", { numeric: true }))
+          }))
+      })),
+    withoutDate
+  };
+}
+
+function parseDateParts(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+
+  let match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  let year;
+  let month;
+  let day;
+
+  if (match) {
+    year = Number(match[1]);
+    month = Number(match[2]);
+    day = Number(match[3]);
+  } else {
+    match = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+    if (!match) return null;
+    day = Number(match[1]);
+    month = Number(match[2]);
+    year = Number(match[3]);
+  }
+
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const paddedMonth = String(month).padStart(2, "0");
+  const paddedDay = String(day).padStart(2, "0");
+  return {
+    year: String(year),
+    monthKey: `${year}-${paddedMonth}`,
+    monthLabel: `${MONTH_NAMES_ES[month - 1]} ${year}`,
+    display: `${paddedDay}/${paddedMonth}/${year}`
+  };
+}
+
+function compareInventoryValues(first, second, column) {
+  if (DATE_FILTER_COLUMNS.has(column)) {
+    const firstDate = dateSortValue(first);
+    const secondDate = dateSortValue(second);
+    if (firstDate !== null && secondDate !== null) return firstDate - secondDate;
+    if (firstDate !== null) return -1;
+    if (secondDate !== null) return 1;
+  }
+  return String(first || "").localeCompare(String(second || ""), "es", { numeric: true });
+}
+
+function dateSortValue(value) {
+  const parts = parseDateParts(value);
+  if (!parts) return null;
+  return Number(parts.monthKey.replace("-", "") + parts.display.slice(0, 2));
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
 function metric(label, value, caption = "") {

@@ -294,6 +294,14 @@ button {
   color: #0f172a;
 }
 
+.field input:disabled,
+.field select:disabled,
+.field textarea:disabled {
+  background: #f8fafc;
+  color: #334155;
+  opacity: 1;
+}
+
 .field textarea {
   min-height: 90px;
   resize: vertical;
@@ -781,11 +789,16 @@ table.data-table {
 }
 
 .filter-list {
-  max-height: 190px;
+  max-height: 230px;
   overflow: auto;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   padding: 4px;
+}
+
+.date-filter-list {
+  display: grid;
+  gap: 2px;
 }
 
 .check-row {
@@ -794,6 +807,34 @@ table.data-table {
   gap: 8px;
   padding: 5px;
   font-size: 0.85rem;
+}
+
+.check-row[hidden],
+.date-year-group[hidden],
+.date-month-group[hidden] {
+  display: none;
+}
+
+.group-row {
+  font-weight: 750;
+}
+
+.group-row small {
+  margin-left: auto;
+  color: #64748b;
+  font-weight: 650;
+  font-size: 0.72rem;
+}
+
+.date-nested {
+  margin-left: 18px;
+  border-left: 1px solid #e2e8f0;
+  padding-left: 6px;
+}
+
+.date-nested.days .check-row {
+  font-weight: 400;
+  color: #334155;
 }
 
 .filter-actions {
