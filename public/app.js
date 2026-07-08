@@ -292,7 +292,7 @@ function renderDashboard() {
       ${metric("Cambios del mes", metrics.cambiosMes, currentMonth)}
     </section>
     <section class="dashboard-layout">
-      <div class="panel span-2">
+      <div class="panel status-panel">
         <div class="panel-head">
           <h3>Distribución por estatus</h3>
           <span>${metrics.total} equipos</span>
@@ -447,20 +447,26 @@ function renderDateFilterOptions(column, values, selected, allSelected) {
   return `
     ${groups.years.map((year) => `
       <div class="date-year-group" data-year-group="${escapeAttr(year.key)}">
-        <label class="check-row group-row year-row filter-choice">
-          <input type="checkbox" data-action="toggle-filter-year" data-column="${column}" data-year="${escapeAttr(year.key)}" />
-          <span>${escapeHtml(year.key)}</span>
+        <div class="check-row group-row year-row filter-choice">
+          <button class="date-toggle" type="button" data-action="toggle-date-group" data-target="year-${escapeAttr(year.key)}" aria-expanded="true" title="Contraer ${escapeAttr(year.key)}"></button>
+          <label class="group-check">
+            <input type="checkbox" data-action="toggle-filter-year" data-column="${column}" data-year="${escapeAttr(year.key)}" />
+            <span>${escapeHtml(year.key)}</span>
+          </label>
           <small>${year.values.length}</small>
-        </label>
-        <div class="date-nested">
+        </div>
+        <div class="date-nested" data-date-children="year-${escapeAttr(year.key)}" data-collapsed="false">
           ${year.months.map((month) => `
             <div class="date-month-group" data-year="${escapeAttr(year.key)}" data-month-group="${escapeAttr(month.key)}">
-              <label class="check-row group-row month-row filter-choice">
-                <input type="checkbox" data-action="toggle-filter-month" data-column="${column}" data-year="${escapeAttr(year.key)}" data-month="${escapeAttr(month.key)}" />
-                <span>${escapeHtml(month.label)}</span>
+              <div class="check-row group-row month-row filter-choice">
+                <button class="date-toggle" type="button" data-action="toggle-date-group" data-target="month-${escapeAttr(month.key)}" aria-expanded="false" title="Abrir ${escapeAttr(month.label)}"></button>
+                <label class="group-check">
+                  <input type="checkbox" data-action="toggle-filter-month" data-column="${column}" data-year="${escapeAttr(year.key)}" data-month="${escapeAttr(month.key)}" />
+                  <span>${escapeHtml(month.label)}</span>
+                </label>
                 <small>${month.values.length}</small>
-              </label>
-              <div class="date-nested days">
+              </div>
+              <div class="date-nested days" data-date-children="month-${escapeAttr(month.key)}" data-collapsed="true">
                 ${month.values.map((item) => renderDateValueOption(column, item, selected, allSelected)).join("")}
               </div>
             </div>
@@ -760,6 +766,8 @@ async function handleClick(event) {
   } else if (action === "enable-data-edit") {
     if (state.modal?.type === "data") state.modal.editing = true;
     render();
+  } else if (action === "toggle-date-group") {
+    toggleDateGroup(button);
   } else if (action === "row-menu") {
     const rect = button.getBoundingClientRect();
     state.actionMenu = {
@@ -974,28 +982,33 @@ function syncCheckboxState(input, values) {
 function updateFilterMenuSearch(menu, value) {
   if (!menu) return;
   const query = normalizeSearchText(value);
+  menu.querySelectorAll(".search-hidden").forEach((item) => item.classList.remove("search-hidden"));
+
   if (!query) {
-    menu.querySelectorAll("[hidden]").forEach((item) => { item.hidden = false; });
     return;
   }
 
   if (menu.dataset.filterType !== "date") {
     menu.querySelectorAll(".filter-choice").forEach((item) => {
-      item.hidden = !normalizeSearchText(item.textContent).includes(query);
+      item.classList.toggle("search-hidden", !normalizeSearchText(item.textContent).includes(query));
     });
     return;
   }
 
   menu.querySelectorAll(".date-value-row").forEach((item) => {
-    item.hidden = !normalizeSearchText(item.textContent).includes(query);
+    item.classList.toggle("search-hidden", !normalizeSearchText(item.textContent).includes(query));
   });
 
   menu.querySelectorAll(".date-month-group").forEach((group) => {
     const row = group.querySelector(".month-row");
     const rowMatches = normalizeSearchText(row?.textContent).includes(query);
     const values = Array.from(group.querySelectorAll(".date-value-row"));
-    if (rowMatches) values.forEach((item) => { item.hidden = false; });
-    group.hidden = !rowMatches && !values.some((item) => !item.hidden);
+    if (rowMatches) values.forEach((item) => item.classList.remove("search-hidden"));
+    const hasVisibleValue = values.some((item) => !item.classList.contains("search-hidden"));
+    group.classList.toggle("search-hidden", !rowMatches && !hasVisibleValue);
+    if (rowMatches || hasVisibleValue) {
+      setDateGroupExpanded(group.querySelector(".date-toggle"), true);
+    }
   });
 
   menu.querySelectorAll(".date-year-group").forEach((group) => {
@@ -1004,12 +1017,31 @@ function updateFilterMenuSearch(menu, value) {
     const months = Array.from(group.querySelectorAll(".date-month-group"));
     if (rowMatches) {
       months.forEach((month) => {
-        month.hidden = false;
-        month.querySelectorAll(".date-value-row").forEach((item) => { item.hidden = false; });
+        month.classList.remove("search-hidden");
+        month.querySelectorAll(".date-value-row").forEach((item) => item.classList.remove("search-hidden"));
       });
     }
-    group.hidden = !rowMatches && !months.some((month) => !month.hidden);
+    const hasVisibleMonth = months.some((month) => !month.classList.contains("search-hidden"));
+    group.classList.toggle("search-hidden", !rowMatches && !hasVisibleMonth);
+    if (rowMatches || hasVisibleMonth) {
+      setDateGroupExpanded(group.querySelector(".year-row .date-toggle"), true);
+    }
   });
+}
+
+function toggleDateGroup(button) {
+  setDateGroupExpanded(button, button.getAttribute("aria-expanded") !== "true");
+}
+
+function setDateGroupExpanded(button, expanded) {
+  if (!button) return;
+  const menu = button.closest(".filter-menu");
+  const target = Array.from(menu?.querySelectorAll("[data-date-children]") || [])
+    .find((item) => item.dataset.dateChildren === button.dataset.target);
+  if (!target) return;
+  target.dataset.collapsed = String(!expanded);
+  button.setAttribute("aria-expanded", String(expanded));
+  button.title = `${expanded ? "Contraer" : "Abrir"} ${button.closest(".group-row")?.innerText.trim() || "grupo"}`;
 }
 
 function buildDateFilterGroups(values) {

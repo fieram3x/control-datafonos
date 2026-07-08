@@ -447,6 +447,7 @@ button {
   grid-template-columns: 1.15fr 1fr 1fr;
   gap: 14px;
   margin-top: 14px;
+  align-items: start;
 }
 
 .span-2 {
@@ -480,6 +481,11 @@ button {
   align-items: center;
 }
 
+.status-panel .status-overview {
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 12px;
+}
+
 .donut {
   width: 150px;
   aspect-ratio: 1;
@@ -504,6 +510,22 @@ button {
   color: #0f3440;
   font-size: 1.4rem;
   font-weight: 850;
+}
+
+.status-panel .donut {
+  width: 118px;
+}
+
+.status-panel .donut::after {
+  width: 68px;
+}
+
+.status-panel .donut span {
+  font-size: 1.12rem;
+}
+
+.status-panel .status-legend {
+  gap: 6px;
 }
 
 .status-legend {
@@ -809,6 +831,8 @@ table.data-table {
   font-size: 0.85rem;
 }
 
+.search-hidden,
+[data-collapsed="true"],
 .check-row[hidden],
 .date-year-group[hidden],
 .date-month-group[hidden] {
@@ -819,11 +843,44 @@ table.data-table {
   font-weight: 750;
 }
 
+.group-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .group-row small {
   margin-left: auto;
   color: #64748b;
   font-weight: 650;
   font-size: 0.72rem;
+}
+
+.filter-menu .date-toggle {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 4px;
+  flex: 0 0 18px;
+  display: inline-grid;
+  place-items: center;
+}
+
+.filter-menu .date-toggle::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #64748b;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.filter-menu .date-toggle[aria-expanded="true"]::before {
+  transform: rotate(90deg);
 }
 
 .date-nested {
