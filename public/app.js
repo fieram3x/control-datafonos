@@ -858,7 +858,7 @@ function handleChange(event) {
   const action = target.dataset.action;
   const menu = target.closest(".filter-menu");
   if (action === "toggle-filter-all") {
-    setFilterValuesChecked(menu, target.checked);
+    setFilterValuesChecked(menu, target.checked, getCurrentFilterSearch(menu) ? isFilterValueVisibleForSearch : () => true);
   } else if (action === "toggle-filter-year") {
     setFilterValuesChecked(menu, target.checked, (input) => input.dataset.year === target.dataset.year);
   } else if (action === "toggle-filter-month") {
@@ -929,7 +929,11 @@ function applyCurrentFilter() {
   if (!menu || !state.filterMenu) return;
   const column = state.filterMenu.column;
   const allValues = uniqueValues(state.inventory, column);
-  const selected = Array.from(menu.querySelectorAll('input[data-action="toggle-filter-value"]'))
+  const valueInputs = Array.from(menu.querySelectorAll('input[data-action="toggle-filter-value"]'));
+  const selectableInputs = getCurrentFilterSearch(menu)
+    ? valueInputs.filter(isFilterValueVisibleForSearch)
+    : valueInputs;
+  const selected = selectableInputs
     .filter((input) => input.checked)
     .map((input) => input.value);
 
@@ -948,6 +952,15 @@ function setFilterValuesChecked(menu, checked, predicate = () => true) {
     if (predicate(input)) input.checked = checked;
   });
   syncFilterMenuControls(menu);
+}
+
+function getCurrentFilterSearch(menu) {
+  return normalizeSearchText(menu?.querySelector('input[data-action="filter-search"]')?.value || state.filterSearch);
+}
+
+function isFilterValueVisibleForSearch(input) {
+  const choice = input.closest(".filter-choice");
+  return !choice || !choice.closest(".search-hidden");
 }
 
 function syncFilterMenuControls(menu = document.querySelector(".filter-menu")) {
