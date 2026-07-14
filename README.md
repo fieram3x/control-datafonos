@@ -7,11 +7,13 @@ El repositorio conserva la versión Streamlit (`app.py`) y agrega una versión C
 ## Funcionalidades
 
 - Dashboard con métricas por estatus, hotel y departamento.
-- Inventario maestro unificado con tabla estilo Excel, filtros por columna, registro de datafonos y exportación Excel.
+- Dashboard interactivo: las métricas y alertas abren el inventario ya filtrado.
+- Inventario maestro con búsqueda global, vistas rápidas, filtros por columna, selección múltiple, actualización masiva controlada y exportación XLSX real.
 - Edición de ubicación, responsable, estatus y bitácora desde la fila seleccionada.
-- Generación de carta de resguardo en PDF para firma del responsable.
-- Historial de cambios con filtros y exportación.
+- Generación de carta de resguardo en PDF únicamente para los datafonos seleccionados.
+- Historial con búsqueda, rango de fechas, usuario responsable y exportación XLSX.
 - Administración de usuarios para rol `Administrador`.
+- Control de concurrencia para advertir si otra persona modificó un registro antes de guardar.
 
 ## Ejecutar en Cloudflare
 
@@ -118,6 +120,8 @@ La app crea hojas faltantes con encabezados esperados:
 - `Config` opcional para listas como hoteles, áreas, departamentos, estatus, roles y estados activo/inactivo.
 
 Si `Config` no existe o está incompleta, se usan valores por defecto definidos en `app.py`.
+
+La versión web agrega automáticamente las columnas `fecha_hora` y `usuario` al final de `Historial` cuando todavía no existen. Los movimientos anteriores continúan siendo compatibles.
 
 ## Seguridad
 

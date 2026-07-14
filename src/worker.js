@@ -6,7 +6,8 @@ const INVENTARIO_COLUMNS = [
 
 const HISTORIAL_COLUMNS = [
   "id_movimiento", "fecha", "terminal_anterior", "terminal_nueva", "hotel", "area",
-  "departamento", "estatus_anterior", "estatus_nuevo", "motivo", "responsable", "observacion"
+  "departamento", "estatus_anterior", "estatus_nuevo", "motivo", "responsable", "observacion",
+  "fecha_hora", "usuario"
 ];
 
 const USUARIOS_COLUMNS = ["usuario", "clave", "rol", "activo"];
@@ -82,7 +83,14 @@ async function handleApi(request, env, ctx, url) {
       readSheet(env, "Historial", HISTORIAL_COLUMNS)
     ]);
     const users = session.rol === "Administrador" ? await getUsers(env) : [];
-    return json({ session, config, inventory, history, users: sanitizeUsers(users) });
+    return json({
+      session,
+      config,
+      inventory,
+      history,
+      users: sanitizeUsers(users),
+      synced_at: nowStamp()
+    });
   }
 
   if (path === "inventory" && request.method === "GET") {
@@ -90,6 +98,9 @@ async function handleApi(request, env, ctx, url) {
   }
   if (path === "inventory" && request.method === "POST") {
     return createInventory(request, env, session);
+  }
+  if (path === "inventory/bulk" && request.method === "PUT") {
+    return updateInventoryBulk(request, env, session);
   }
 
   const inventoryStatusMatch = path.match(/^inventory\/([^/]+)\/status$/);
@@ -128,13 +139,13 @@ async function handleApi(request, env, ctx, url) {
   const userStatusMatch = path.match(/^users\/([^/]+)\/status$/);
   if (userStatusMatch && request.method === "PUT") {
     requireAdmin(session);
-    return changeUserStatus(request, env, decodeURIComponent(userStatusMatch[1]));
+    return changeUserStatus(request, env, decodeURIComponent(userStatusMatch[1]), session);
   }
 
   const userMatch = path.match(/^users\/([^/]+)$/);
   if (userMatch && request.method === "PUT") {
     requireAdmin(session);
-    return updateUser(request, env, decodeURIComponent(userMatch[1]));
+    return updateUser(request, env, decodeURIComponent(userMatch[1]), session);
   }
 
   return json({ error: "Ruta no encontrada." }, 404);
@@ -224,7 +235,7 @@ async function createInventory(request, env, session) {
     motivo: "Registro inicial",
     responsable: row.responsable,
     observacion: row.observacion
-  });
+  }, session);
   return json({ row });
 }
 
@@ -234,14 +245,24 @@ async function updateInventoryStatus(request, env, session, id) {
   const row = inventory.find((item) => String(item.id) === String(id));
   if (!row) return json({ error: "La terminal seleccionada ya no existe." }, 404);
 
+  const conflict = validateInventoryRevision(body.actualizado_el, row);
+  if (conflict) return conflict;
+
   const nuevoEstatus = normalizeText(body.estatus);
   if (!nuevoEstatus) return json({ error: "Seleccione un estatus." }, 400);
+  const sustituidoPor = normalizeTerminal(body.sustituido_por);
+  if (nuevoEstatus === "Sustituido" && !sustituidoPor) {
+    return json({ error: "Indica la terminal que sustituye al equipo." }, 400);
+  }
+  if (sustituidoPor && sustituidoPor === normalizeTerminal(row.numero_terminal)) {
+    return json({ error: "La terminal sustituta debe ser diferente a la terminal actual." }, 400);
+  }
 
   const updated = {
     ...row,
     estatus: nuevoEstatus,
     fecha_cambio: normalizeText(body.fecha_cambio) || todayIso(),
-    sustituido_por: normalizeText(body.sustituido_por),
+    sustituido_por: nuevoEstatus === "Sustituido" ? sustituidoPor : "",
     observacion: normalizeText(body.observacion),
     actualizado_el: nowStamp()
   };
@@ -258,7 +279,7 @@ async function updateInventoryStatus(request, env, session, id) {
     motivo: normalizeText(body.motivo) || "Actualización de estatus",
     responsable: row.responsable,
     observacion: normalizeText(body.observacion)
-  });
+  }, session);
   return json({ row: updated });
 }
 
@@ -267,6 +288,9 @@ async function updateInventoryData(request, env, session, id) {
   const inventory = await readSheet(env, "Inventario", INVENTARIO_COLUMNS);
   const row = inventory.find((item) => String(item.id) === String(id));
   if (!row) return json({ error: "La terminal seleccionada ya no existe." }, 404);
+
+  const conflict = validateInventoryRevision(body.actualizado_el, row);
+  if (conflict) return conflict;
 
   const numeroTerminal = normalizeTerminal(body.numero_terminal);
   const numeroAfiliado = normalizeTerminal(body.numero_afiliado);
@@ -308,8 +332,61 @@ async function updateInventoryData(request, env, session, id) {
     motivo: "Edición de datos maestros",
     responsable: updated.responsable,
     observacion: updated.observacion
-  });
+  }, session);
   return json({ row: updated });
+}
+
+async function updateInventoryBulk(request, env, session) {
+  const body = await readJson(request);
+  const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
+  const rawChanges = body.changes && typeof body.changes === "object" ? body.changes : {};
+  if (!items.length) return json({ error: "Selecciona al menos un datafono." }, 400);
+
+  const allowedFields = ["hotel", "area", "departamento", "responsable", "estatus"];
+  const changes = {};
+  allowedFields.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(rawChanges, field)) changes[field] = normalizeText(rawChanges[field]);
+  });
+  if (!Object.keys(changes).length) return json({ error: "Indica al menos un dato para actualizar." }, 400);
+  if (changes.estatus === "Sustituido") {
+    return json({ error: "El estatus Sustituido debe registrarse individualmente con su terminal sustituta." }, 400);
+  }
+
+  const inventory = await readSheet(env, "Inventario", INVENTARIO_COLUMNS);
+  const rows = items.map((item) => inventory.find((row) => String(row.id) === String(item.id))).filter(Boolean);
+  if (rows.length !== items.length) return json({ error: "Uno o más datafonos ya no existen. Actualiza la vista." }, 409);
+
+  for (const item of items) {
+    const row = rows.find((candidate) => String(candidate.id) === String(item.id));
+    if (normalizeText(item.actualizado_el) !== normalizeText(row.actualizado_el)) {
+      return json({ error: `La terminal ${row.numero_terminal} fue modificada por otra persona. Actualiza la vista.` }, 409);
+    }
+  }
+
+  const stamp = nowStamp();
+  const updatedRows = rows.map((row) => ({
+    ...row,
+    ...changes,
+    fecha_cambio: changes.estatus && changes.estatus !== row.estatus ? todayIso() : row.fecha_cambio,
+    sustituido_por: changes.estatus && changes.estatus !== "Sustituido" ? "" : row.sustituido_por,
+    actualizado_el: stamp
+  }));
+  await batchUpdateSheetRows(env, "Inventario", INVENTARIO_COLUMNS, "id", updatedRows);
+  const motivo = normalizeText(body.motivo) || "Actualización masiva";
+  const historyRows = updatedRows.map((updated, index) => createHistoryRow({
+    terminal_anterior: rows[index].numero_terminal,
+    terminal_nueva: "",
+    hotel: updated.hotel,
+    area: updated.area,
+    departamento: updated.departamento,
+    estatus_anterior: rows[index].estatus,
+    estatus_nuevo: updated.estatus,
+    motivo,
+    responsable: updated.responsable,
+    observacion: `Actualización masiva de ${Object.keys(changes).join(", ")}`
+  }, session));
+  await appendSheetRows(env, "Historial", historyRows, HISTORIAL_COLUMNS);
+  return json({ updated: updatedRows.length });
 }
 
 async function createUser(request, env) {
@@ -332,7 +409,7 @@ async function createUser(request, env) {
   return json({ user: sanitizeUser(row) });
 }
 
-async function updateUser(request, env, usuario) {
+async function updateUser(request, env, usuario, session) {
   const body = await readJson(request);
   const users = await getUsers(env);
   const row = users.find((item) => item.usuario === usuario);
@@ -342,12 +419,27 @@ async function updateUser(request, env, usuario) {
   if (nuevoUsuario !== usuario && users.some((item) => item.usuario === nuevoUsuario)) {
     return json({ error: "Ese usuario ya existe." }, 409);
   }
+  if (row.usuario === session.usuario && nuevoUsuario !== usuario) {
+    return json({ error: "No puedes renombrar el usuario de tu sesión actual." }, 400);
+  }
+
+  const nextRole = normalizeText(body.rol) || row.rol;
+  const nextActive = normalizeText(body.activo) || row.activo;
+  if (row.usuario === session.usuario && (nextRole !== "Administrador" || nextActive !== "Sí")) {
+    return json({ error: "No puedes quitar tu propio acceso de administrador." }, 400);
+  }
+  if (row.rol === "Administrador" && row.activo === "Sí" && (nextRole !== "Administrador" || nextActive !== "Sí")) {
+    const activeAdmins = users.filter((item) => item.rol === "Administrador" && item.activo === "Sí");
+    if (activeAdmins.length <= 1) {
+      return json({ error: "Debe permanecer al menos un administrador activo." }, 400);
+    }
+  }
 
   const updated = {
     ...row,
     usuario: nuevoUsuario,
-    rol: normalizeText(body.rol) || row.rol,
-    activo: normalizeText(body.activo) || row.activo
+    rol: nextRole,
+    activo: nextActive
   };
   await updateSheetRow(env, "Usuarios", USUARIOS_COLUMNS, "usuario", usuario, updated);
   return json({ user: sanitizeUser(updated) });
@@ -367,18 +459,34 @@ async function changeUserPassword(request, env, usuario) {
   return json({ user: sanitizeUser(updated) });
 }
 
-async function changeUserStatus(request, env, usuario) {
+async function changeUserStatus(request, env, usuario, session) {
   const users = await getUsers(env);
   const row = users.find((item) => item.usuario === usuario);
   if (!row) return json({ error: "Usuario no encontrado." }, 404);
+
+  if (row.usuario === session.usuario && row.activo === "Sí") {
+    return json({ error: "No puedes desactivar tu propia sesión." }, 400);
+  }
+  if (row.rol === "Administrador" && row.activo === "Sí") {
+    const activeAdmins = users.filter((item) => item.rol === "Administrador" && item.activo === "Sí");
+    if (activeAdmins.length <= 1) {
+      return json({ error: "Debe permanecer al menos un administrador activo." }, 400);
+    }
+  }
 
   const updated = { ...row, activo: row.activo === "Sí" ? "No" : "Sí" };
   await updateSheetRow(env, "Usuarios", USUARIOS_COLUMNS, "usuario", usuario, updated);
   return json({ user: sanitizeUser(updated) });
 }
 
-async function addHistory(env, values) {
-  const row = {
+async function addHistory(env, values, session = {}) {
+  const row = createHistoryRow(values, session);
+  await appendSheetRow(env, "Historial", row, HISTORIAL_COLUMNS);
+  return row;
+}
+
+function createHistoryRow(values, session = {}) {
+  return {
     id_movimiento: crypto.randomUUID().slice(0, 8),
     fecha: todayIso(),
     terminal_anterior: normalizeText(values.terminal_anterior),
@@ -390,10 +498,10 @@ async function addHistory(env, values) {
     estatus_nuevo: normalizeText(values.estatus_nuevo),
     motivo: normalizeText(values.motivo),
     responsable: normalizeText(values.responsable),
-    observacion: normalizeText(values.observacion)
+    observacion: normalizeText(values.observacion),
+    fecha_hora: nowStamp(),
+    usuario: normalizeText(session.usuario) || "Sistema"
   };
-  await appendSheetRow(env, "Historial", row, HISTORIAL_COLUMNS);
-  return row;
 }
 
 async function getUsers(env) {
@@ -456,6 +564,16 @@ async function appendSheetRow(env, name, row, columns) {
   });
 }
 
+async function appendSheetRows(env, name, rows, columns) {
+  if (!rows.length) return;
+  await ensureSheet(env, name, columns);
+  const values = rows.map((row) => columns.map((column) => normalizeText(row[column])));
+  await sheetsRequest(env, `/values/${encodeRange(`${name}!A:Z`)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+    method: "POST",
+    body: JSON.stringify({ values })
+  });
+}
+
 async function updateSheetRow(env, name, columns, keyColumn, keyValue, rowValues) {
   await ensureSheet(env, name, columns);
   const rowNumber = await findSheetRowNumber(env, name, columns, keyColumn, keyValue);
@@ -467,6 +585,29 @@ async function updateSheetRow(env, name, columns, keyColumn, keyValue, rowValues
     body: JSON.stringify({ values: [values] })
   });
   return true;
+}
+
+async function batchUpdateSheetRows(env, name, columns, keyColumn, rows) {
+  await ensureSheet(env, name, columns);
+  const values = await sheetsValuesGet(env, `${name}!A:Z`);
+  const headers = values[0]?.map(normalizeText) || [];
+  const keyIndex = headers.indexOf(keyColumn);
+  if (keyIndex < 0) throw new ApiError(`No se encontró la columna ${keyColumn}.`, 500);
+  const positions = new Map();
+  values.slice(1).forEach((row, index) => positions.set(normalizeText(row[keyIndex]), index + 2));
+  const endColumn = columnToLetter(columns.length);
+  const data = rows.map((row) => {
+    const rowNumber = positions.get(normalizeText(row[keyColumn]));
+    if (!rowNumber) throw new ApiError("Uno de los registros seleccionados ya no existe.", 409);
+    return {
+      range: `${name}!A${rowNumber}:${endColumn}${rowNumber}`,
+      values: [columns.map((column) => normalizeText(row[column]))]
+    };
+  });
+  await sheetsRequest(env, "/values:batchUpdate", {
+    method: "POST",
+    body: JSON.stringify({ valueInputOption: "USER_ENTERED", data })
+  });
 }
 
 async function findSheetRowNumber(env, name, columns, keyColumn, keyValue) {
@@ -535,6 +676,17 @@ async function ensureSheet(env, name, columns) {
       method: "PUT",
       body: JSON.stringify({ values: [columns] })
     });
+  } else {
+    const normalizedHeaders = headers.map(normalizeText);
+    const missingColumns = columns.filter((column) => !normalizedHeaders.includes(column));
+    if (missingColumns.length) {
+      const start = normalizedHeaders.length + 1;
+      const end = normalizedHeaders.length + missingColumns.length;
+      await sheetsRequest(env, `/values/${encodeRange(`${name}!${columnToLetter(start)}1:${columnToLetter(end)}1`)}?valueInputOption=USER_ENTERED`, {
+        method: "PUT",
+        body: JSON.stringify({ values: [missingColumns] })
+      });
+    }
   }
 }
 
@@ -736,6 +888,17 @@ function validateTerminalFields(terminal, afiliado) {
   if (!/^[A-Za-z0-9-]{3,30}$/.test(terminal)) return "El número de terminal debe tener 3-30 caracteres alfanuméricos o guiones.";
   if (!/^[A-Za-z0-9-]{3,30}$/.test(afiliado)) return "El número de afiliado debe tener 3-30 caracteres alfanuméricos o guiones.";
   return "";
+}
+
+function validateInventoryRevision(clientRevision, currentRow) {
+  if (clientRevision === undefined || clientRevision === null) return null;
+  const expected = normalizeText(clientRevision);
+  const current = normalizeText(currentRow.actualizado_el);
+  if (expected === current) return null;
+  return json({
+    error: "Este datafono fue modificado por otra persona. Actualiza los datos antes de guardar.",
+    current: currentRow
+  }, 409);
 }
 
 function sanitizeUsers(users) {

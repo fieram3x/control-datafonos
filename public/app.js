@@ -30,7 +30,8 @@ const MONTH_NAMES_ES = [
 ];
 
 const HISTORY_COLUMNS = [
-  ["fecha", "Fecha"],
+  ["fecha_hora", "Fecha y hora"],
+  ["usuario", "Usuario"],
   ["terminal_anterior", "Terminal anterior"],
   ["terminal_nueva", "Terminal nueva"],
   ["hotel", "Hotel"],
@@ -72,13 +73,28 @@ const state = {
   view: "dashboard",
   inventoryFilters: {},
   inventorySort: null,
+  inventorySearch: "",
+  selectedInventoryIds: [],
   historySearch: "",
+  historyUser: "",
+  historyDateFrom: "",
+  historyDateTo: "",
   actionMenu: null,
   filterMenu: null,
   filterSearch: "",
   modal: null,
   toast: null,
-  loading: false
+  loading: false,
+  sidebarOpen: false,
+  syncedAt: "",
+  syncError: false
+};
+
+const VIEW_META = {
+  dashboard: ["Dashboard", "Panorama operativo y alertas del inventario"],
+  inventory: ["Inventario maestro", "Consulta, filtra y gestiona los datafonos"],
+  history: ["Historial de cambios", "Trazabilidad de movimientos y responsables"],
+  users: ["Usuarios", "Accesos, roles y estado de las cuentas"]
 };
 
 const app = document.getElementById("app");
@@ -99,8 +115,14 @@ function bindEvents() {
     if (event.key === "Escape") {
       state.actionMenu = null;
       state.filterMenu = null;
-      if (state.modal) state.modal = null;
+      state.sidebarOpen = false;
+      if (state.modal) {
+        closeModal();
+        return;
+      }
       render();
+    } else if (event.key === "Tab" && state.modal) {
+      trapDialogFocus(event);
     }
   });
 }
@@ -130,8 +152,12 @@ async function loadBootstrap() {
     state.inventory = data.inventory || [];
     state.history = data.history || [];
     state.users = data.users || [];
+    state.syncedAt = data.synced_at || "";
+    state.syncError = false;
+    state.selectedInventoryIds = state.selectedInventoryIds.filter((id) => state.inventory.some((row) => row.id === id));
   } catch (error) {
     if (error.status === 401) state.session = null;
+    state.syncError = true;
     showToast(error.message, "error");
   } finally {
     state.loading = false;
@@ -152,6 +178,7 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data.error || "No fue posible completar la operación.");
     error.status = response.status;
+    error.data = data;
     throw error;
   }
   return data;
@@ -167,8 +194,9 @@ function render() {
   app.innerHTML = `
     <div class="app-shell">
       ${renderSidebar()}
+      ${state.sidebarOpen ? `<button class="sidebar-backdrop" data-action="close-sidebar" aria-label="Cerrar menú"></button>` : ""}
       <main class="main">
-        <section class="title-card"><h1>${creditCardIcon()}Control de Datafonos</h1></section>
+        ${renderTopbar()}
         ${state.loading ? `<div class="panel">Cargando datos...</div>` : renderView()}
       </main>
     </div>
@@ -177,24 +205,38 @@ function render() {
     ${state.modal ? renderModal() : ""}
   `;
   syncFilterMenuControls();
+  syncSelectionHeader();
   renderToast();
+  focusActiveDialog();
 }
 
 function renderLogin() {
   return `
     <main class="login-shell">
       <form class="login-card" data-form="login">
-        <h1>${creditCardIcon()}Iniciar sesión</h1>
-        <p>Ingresa tus credenciales para continuar.</p>
-        <div class="field">
-          <label>Usuario</label>
-          <input name="usuario" autocomplete="username" required />
-        </div>
-        <div class="field" style="margin-top:14px">
-          <label>Contraseña</label>
-          <input name="clave" type="password" autocomplete="current-password" required />
-        </div>
-        <button class="btn primary" style="width:100%;margin-top:18px" type="submit">Entrar</button>
+        <section class="login-brand" aria-label="Control de Datafonos">
+          <div class="login-brand-title">${creditCardIcon()}<span>Control de Datafonos</span></div>
+          <h1>Inventario confiable, decisiones rápidas.</h1>
+          <p>Consulta ubicaciones, responsables, resguardos e historial desde un solo lugar.</p>
+          <div class="login-features">
+            <span>Inventario centralizado</span>
+            <span>Trazabilidad de cambios</span>
+            <span>Resguardos en PDF</span>
+          </div>
+        </section>
+        <section class="login-form-panel">
+          <span class="eyebrow">Acceso seguro</span>
+          <h2>Iniciar sesión</h2>
+          <p>Ingresa tus credenciales para continuar.</p>
+          ${formErrorRegion()}
+          ${field("usuario", "Usuario *", "", "text", 'autocomplete="username" autofocus')}
+          <div class="password-field">
+            ${field("clave", "Contraseña *", "", "password", 'autocomplete="current-password"')}
+            <button class="password-toggle" type="button" data-action="toggle-password" aria-label="Mostrar contraseña">Mostrar</button>
+          </div>
+          <button class="btn primary full-width" type="submit" data-busy-label="Ingresando…">Entrar</button>
+          <small class="login-help">Si no puedes acceder, contacta al administrador del inventario.</small>
+        </section>
       </form>
     </main>
   `;
@@ -202,32 +244,50 @@ function renderLogin() {
 
 function renderSidebar() {
   const menu = [
-    ["dashboard", "Dashboard"],
-    ["inventory", "Inventario Maestro"],
-    ["history", "Historial de Cambios"]
+    ["dashboard", "Dashboard", "⌂"],
+    ["inventory", "Inventario maestro", "▦"],
+    ["history", "Historial de cambios", "↺"]
   ];
-  if (state.session.rol === "Administrador") menu.push(["users", "Usuarios"]);
+  if (state.session.rol === "Administrador") menu.push(["users", "Usuarios", "♙"]);
 
   return `
-    <aside class="sidebar">
+    <aside class="sidebar ${state.sidebarOpen ? "open" : ""}" aria-label="Navegación principal">
       <div class="sidebar-title">${creditCardIcon()}Control Datafonos</div>
       <div class="user-card">
-        <div><strong>Usuario:</strong> ${escapeHtml(state.session.usuario)}</div>
-        <div><strong>Rol:</strong> ${escapeHtml(state.session.rol)}</div>
+        <span class="avatar" aria-hidden="true">${escapeHtml(String(state.session.usuario || "U").slice(0, 1).toUpperCase())}</span>
+        <div><strong>${escapeHtml(state.session.usuario)}</strong><small>${escapeHtml(state.session.rol)}</small></div>
       </div>
       <nav class="nav">
-        ${menu.map(([view, label]) => `
+        ${menu.map(([view, label, icon]) => `
           <button class="${state.view === view ? "active" : ""}" data-action="nav" data-view="${view}">
-            <span>${state.view === view ? "●" : "○"}</span>${label}
+            <span class="nav-icon" aria-hidden="true">${icon}</span><span>${label}</span>
           </button>
         `).join("")}
       </nav>
       <div class="sidebar-actions">
-        <div class="sidebar-footer">Base de datos conectada:<br><strong>Google Sheets</strong></div>
-        <button class="btn" data-action="refresh">Refrescar datos</button>
+        <div class="sidebar-footer"><span class="connection-dot"></span><div><small>Fuente de datos</small><strong>Google Sheets</strong></div></div>
+        <button class="btn" data-action="refresh">↻ Actualizar datos</button>
         <button class="btn" data-action="logout">Cerrar sesión</button>
       </div>
     </aside>
+  `;
+}
+
+function renderTopbar() {
+  const [title, subtitle] = VIEW_META[state.view] || VIEW_META.dashboard;
+  return `
+    <header class="topbar">
+      <button class="mobile-menu-btn" data-action="open-sidebar" aria-label="Abrir menú" aria-expanded="${state.sidebarOpen}">☰</button>
+      <div class="topbar-title">
+        <span class="eyebrow">Control de Datafonos</span>
+        <h1>${escapeHtml(title)}</h1>
+        <p>${escapeHtml(subtitle)}</p>
+      </div>
+      <div class="sync-status" title="Última actualización completada">
+        <span class="connection-dot ${state.syncError ? "error" : state.syncedAt ? "" : "pending"}"></span>
+        <div><small>Última actualización</small><strong>${state.syncError ? "Error de conexión" : escapeHtml(formatSyncTime(state.syncedAt))}</strong></div>
+      </div>
+    </header>
   `;
 }
 
@@ -257,38 +317,32 @@ function renderDashboard() {
   const activeRate = metrics.total ? Math.round((metrics.activos / metrics.total) * 100) : 0;
   const custodyRate = metrics.total ? Math.round((metrics.resguardo / metrics.total) * 100) : 0;
   const alerts = [
-    ["En reparación", metrics.reparacion, "Equipos que requieren seguimiento"],
-    ["Sustituidos", metrics.sustituidos, "Equipos con cambio operativo"],
-    ["Decomisados/Baja", metrics.decomisadosBaja, "Equipos fuera de operación"]
+    operationalAlert("En reparación", ["En reparación"]),
+    operationalAlert("Sustituidos", ["Sustituido"]),
+    operationalAlert("Decomisados/Baja", ["Decomisado", "Baja"])
   ];
 
   return `
-    <div class="section-head dashboard-head">
-      <div>
-        <h2>Dashboard</h2>
-        <p class="muted">Resumen operativo del inventario conectado a Google Sheets.</p>
-      </div>
-      <button class="btn" data-action="refresh">Actualizar</button>
-    </div>
     <section class="dashboard-hero">
       <div>
         <span class="eyebrow">Inventario general</span>
         <strong>${metrics.total}</strong>
-        <p>Datafonos registrados en la base de datos.</p>
+        <p>Datafonos registrados y disponibles para seguimiento.</p>
+        <button class="text-link" data-action="open-inventory-filter" data-statuses="">Ver inventario completo →</button>
       </div>
       <div class="hero-stats">
-        ${miniStat("Activos", `${activeRate}%`, metrics.activos)}
-        ${miniStat("Resguardo", `${custodyRate}%`, metrics.resguardo)}
-        ${miniStat("Cambios del mes", metrics.cambiosMes, "movimientos")}
+        ${miniStat("Activos", `${activeRate}%`, `${metrics.activos} equipos`, ["Activo"])}
+        ${miniStat("Resguardo", `${custodyRate}%`, `${metrics.resguardo} equipos`, ["Resguardo"])}
+        ${miniStat("Cambios del mes", metrics.cambiosMes, "movimientos", [], "history")}
       </div>
     </section>
     <section class="metrics dashboard-metrics">
-      ${metric("Activos", metrics.activos, "Disponibles para operación")}
-      ${metric("Resguardo", metrics.resguardo, "Asignados bajo responsabilidad")}
-      ${metric("En reparación", metrics.reparacion, "Pendientes de seguimiento")}
-      ${metric("Sustituidos", metrics.sustituidos, "Con terminal reemplazante")}
-      ${metric("Decomisados/Baja", metrics.decomisadosBaja, "Fuera de operación")}
-      ${metric("Cambios del mes", metrics.cambiosMes, currentMonth)}
+      ${metric("Activos", metrics.activos, "Disponibles para operación", ["Activo"])}
+      ${metric("Resguardo", metrics.resguardo, "Asignados bajo responsabilidad", ["Resguardo"])}
+      ${metric("En reparación", metrics.reparacion, "Pendientes de seguimiento", ["En reparación"])}
+      ${metric("Sustituidos", metrics.sustituidos, "Con terminal reemplazante", ["Sustituido"])}
+      ${metric("Decomisados/Baja", metrics.decomisadosBaja, "Fuera de operación", ["Decomisado", "Baja"])}
+      ${metric("Cambios del mes", metrics.cambiosMes, currentMonth, [], "history")}
     </section>
     <section class="dashboard-layout">
       <div class="panel status-panel dashboard-chart">
@@ -326,32 +380,61 @@ function renderDashboard() {
 function renderInventory() {
   const rows = getFilteredInventory();
   return `
-    <div class="section-head">
-      <h2>Inventario maestro</h2>
-      <button class="btn primary" data-action="open-modal" data-modal="register">Registrar nuevo datafono</button>
+    <section class="inventory-toolbar panel">
+      <div class="toolbar-main">
+        <label class="search-box" for="inventory-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="inventory-search" type="search" data-action="inventory-search" placeholder="Buscar terminal, afiliado, hotel o responsable" value="${escapeAttr(state.inventorySearch)}" />
+        </label>
+        <button class="btn primary" data-action="open-modal" data-modal="register">+ Registrar datafono</button>
+      </div>
+      <div class="quick-views" aria-label="Vistas rápidas">
+        <span>Vistas rápidas:</span>
+        <button data-action="inventory-preset" data-preset="repair">En reparación</button>
+        <button data-action="inventory-preset" data-preset="unassigned">Sin responsable</button>
+        <button data-action="inventory-preset" data-preset="out">Fuera de operación</button>
+        <button data-action="inventory-preset" data-preset="all">Todos</button>
+      </div>
+    </section>
+    <div class="inventory-meta">
+      <div>
+        <strong class="inventory-count">${rows.length} de ${state.inventory.length}</strong>
+        <span class="muted">datafonos visibles</span>
+      </div>
+      <div class="toolbar">
+        <button class="btn" data-action="clear-all-filters" ${hasAnyInventoryConstraint() ? "" : "disabled"}>Limpiar filtros</button>
+        <button class="btn" data-action="export-excel" ${rows.length ? "" : "disabled"}>Exportar vista XLSX</button>
+      </div>
     </div>
-    <div class="section-head">
-      <h3>Datafonos registrados</h3>
+    <div class="active-filters" aria-live="polite">${renderActiveFilterChips()}</div>
+    <div class="selection-host">
+      ${renderSelectionBar()}
     </div>
-    ${renderInventoryTable(rows)}
-    <div class="table-actions">
-      <button class="btn primary" data-action="open-modal" data-modal="resguardo" ${rows.length ? "" : "disabled"}>Generar resguardo PDF</button>
-      <button class="btn" data-action="export-excel" ${rows.length ? "" : "disabled"}>Descargar inventario Excel</button>
+    <div class="inventory-results">
+      ${renderInventoryTable(rows)}
     </div>
   `;
 }
 
 function renderInventoryTable(rows) {
+  const visibleIds = rows.map((row) => row.id);
+  const selectedVisible = visibleIds.filter((id) => state.selectedInventoryIds.includes(id));
+  const allSelected = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
   return `
-    <div class="table-shell">
+    <div class="table-shell desktop-inventory-table">
       <table class="data-table">
         <thead>
           <tr>
+            <th class="select-head sticky-select">
+              <input type="checkbox" data-action="select-visible" aria-label="Seleccionar todos los datafonos visibles" ${allSelected ? "checked" : ""} ${selectedVisible.length && !allSelected ? 'data-indeterminate="true"' : ""} />
+            </th>
             <th class="actions-head"></th>
             ${INVENTORY_TABLE_COLUMNS.map(([key, label]) => `
-              <th>
+              <th class="${inventoryColumnClass(key)}">
                 <div class="th-content">
-                  <span>${label}</span>
+                  <button class="sort-btn" data-action="sort-column" data-column="${key}" aria-label="Ordenar por ${escapeAttr(label)}">
+                    <span>${label}</span>${sortIndicator(key)}
+                  </button>
                   <button class="filter-btn ${isFilterActive(key) ? "active" : ""}" data-action="open-filter" data-column="${key}" title="Filtrar" aria-label="Filtrar ${escapeAttr(label)}">
                     <span class="filter-icon" aria-hidden="true"></span>
                   </button>
@@ -361,9 +444,18 @@ function renderInventoryTable(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rows.length ? rows.map(renderInventoryRow).join("") : `<tr><td colspan="${INVENTORY_TABLE_COLUMNS.length + 1}" class="empty">No hay datafonos para mostrar.</td></tr>`}
+          ${rows.length ? rows.map(renderInventoryRow).join("") : `<tr><td colspan="${INVENTORY_TABLE_COLUMNS.length + 2}" class="empty-state"><strong>No encontramos datafonos</strong><span>Prueba con otra búsqueda o limpia los filtros activos.</span><button class="btn" data-action="clear-all-filters">Limpiar filtros</button></td></tr>`}
         </tbody>
       </table>
+    </div>
+    <div class="mobile-inventory-list">
+      ${rows.length ? `
+        <label class="mobile-select-all">
+          <input type="checkbox" data-action="select-visible" ${allSelected ? "checked" : ""} />
+          <span>Seleccionar los ${rows.length} visibles</span>
+        </label>
+        ${rows.map(renderInventoryMobileCard).join("")}
+      ` : `<div class="empty-state mobile-empty"><strong>No encontramos datafonos</strong><span>Prueba con otra búsqueda o limpia los filtros activos.</span><button class="btn" data-action="clear-all-filters">Limpiar filtros</button></div>`}
     </div>
   `;
 }
@@ -371,8 +463,10 @@ function renderInventoryTable(rows) {
 function renderInventoryRow(row) {
   const statusClass = STATUS_CLASS[row.estatus] || "";
   const activeMenu = state.actionMenu?.id === row.id ? "active" : "";
+  const selected = state.selectedInventoryIds.includes(row.id);
   return `
-    <tr class="${statusClass}">
+    <tr class="${statusClass} ${selected ? "selected" : ""}">
+      <td class="select-cell sticky-select"><input type="checkbox" data-action="select-row" data-id="${escapeAttr(row.id)}" aria-label="Seleccionar terminal ${escapeAttr(row.numero_terminal)}" ${selected ? "checked" : ""} /></td>
       <td class="actions-cell">
         <button class="btn icon kebab-btn ${activeMenu}" data-action="row-menu" data-id="${escapeAttr(row.id)}" title="Acciones" aria-label="Acciones de terminal ${escapeAttr(row.numero_terminal)}">
           <span aria-hidden="true"></span>
@@ -380,9 +474,59 @@ function renderInventoryRow(row) {
           <span aria-hidden="true"></span>
         </button>
       </td>
-      ${INVENTORY_TABLE_COLUMNS.map(([key]) => `<td>${key === "estatus" ? statusPill(row[key]) : escapeHtml(row[key])}</td>`).join("")}
+      ${INVENTORY_TABLE_COLUMNS.map(([key]) => `<td class="${inventoryColumnClass(key)}">${key === "estatus" ? statusPill(row[key]) : escapeHtml(row[key])}</td>`).join("")}
     </tr>
   `;
+}
+
+function renderInventoryMobileCard(row) {
+  const selected = state.selectedInventoryIds.includes(row.id);
+  const activeMenu = state.actionMenu?.id === row.id ? "active" : "";
+  return `
+    <article class="inventory-mobile-card ${selected ? "selected" : ""}">
+      <div class="mobile-card-head">
+        <label class="mobile-row-select"><input type="checkbox" data-action="select-row" data-id="${escapeAttr(row.id)}" aria-label="Seleccionar terminal ${escapeAttr(row.numero_terminal)}" ${selected ? "checked" : ""} /><span></span></label>
+        <div><small>Terminal</small><strong>${escapeHtml(row.numero_terminal)}</strong></div>
+        ${statusPill(row.estatus)}
+        <button class="btn icon kebab-btn ${activeMenu}" data-action="row-menu" data-id="${escapeAttr(row.id)}" aria-label="Acciones de terminal ${escapeAttr(row.numero_terminal)}"><span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span></button>
+      </div>
+      <div class="mobile-card-grid">
+        <div><small>Afiliado</small><strong>${escapeHtml(row.numero_afiliado || "—")}</strong></div>
+        <div><small>Hotel</small><strong>${escapeHtml(row.hotel || "—")}</strong></div>
+        <div><small>Ubicación</small><strong>${escapeHtml([row.area, row.departamento].filter(Boolean).join(" · ") || "—")}</strong></div>
+        <div><small>Responsable</small><strong>${escapeHtml(row.responsable || "Sin asignar")}</strong></div>
+      </div>
+      <div class="mobile-card-foot"><span>Asignación: ${escapeHtml(row.fecha_asignacion || "Sin fecha")}</span>${row.fecha_cambio ? `<span>Cambio: ${escapeHtml(row.fecha_cambio)}</span>` : ""}</div>
+    </article>
+  `;
+}
+
+function renderSelectionBar() {
+  const rows = getSelectedInventory();
+  if (!rows.length) return `<div class="selection-placeholder">Selecciona uno o varios datafonos para generar resguardos o exportar una selección.</div>`;
+  return `
+    <div class="selection-bar" role="status">
+      <div><strong>${rows.length}</strong><span>${rows.length === 1 ? "datafono seleccionado" : "datafonos seleccionados"}</span></div>
+      <div class="toolbar">
+        <button class="btn" data-action="open-modal" data-modal="bulk-edit">Actualizar selección</button>
+        <button class="btn" data-action="export-selected">Exportar selección</button>
+        <button class="btn primary" data-action="open-modal" data-modal="resguardo">Generar resguardo PDF</button>
+        <button class="btn ghost" data-action="clear-selection">Cancelar selección</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderActiveFilterChips() {
+  const chips = [];
+  if (state.inventorySearch) chips.push(`<button class="filter-chip" data-action="clear-search">Búsqueda: ${escapeHtml(truncate(state.inventorySearch, 24))} ×</button>`);
+  Object.entries(state.inventoryFilters).forEach(([column, values]) => {
+    const label = LABELS[column] || column;
+    const valueLabel = values.length === 1 ? (values[0] || "Sin valor") : `${values.length} valores`;
+    chips.push(`<button class="filter-chip" data-action="remove-filter" data-column="${escapeAttr(column)}">${escapeHtml(label)}: ${escapeHtml(valueLabel)} ×</button>`);
+  });
+  if (state.inventorySort) chips.push(`<button class="filter-chip neutral" data-action="clear-sort">Orden: ${escapeHtml(LABELS[state.inventorySort.column])} ${state.inventorySort.dir === "asc" ? "↑" : "↓"} ×</button>`);
+  return chips.join("") || `<span class="muted">Sin filtros activos</span>`;
 }
 
 function renderActionMenu() {
@@ -486,30 +630,40 @@ function renderDateValueOption(column, item, selected, allSelected) {
 
 function renderHistory() {
   const rows = getFilteredHistory();
+  const users = uniqueValues(state.history, "usuario").filter(Boolean);
   return `
-    <div class="section-head">
-      <h2>Historial de cambios</h2>
-      <div class="toolbar">
-        <input class="btn" data-action="history-search" placeholder="Buscar" value="${escapeAttr(state.historySearch)}" />
-        <button class="btn" data-action="export-history" ${rows.length ? "" : "disabled"}>Descargar historial Excel</button>
+    <section class="history-toolbar panel">
+      <label class="search-box" for="history-search"><span aria-hidden="true">⌕</span><input id="history-search" type="search" data-action="history-search" placeholder="Buscar terminal, motivo, hotel o responsable" value="${escapeAttr(state.historySearch)}" /></label>
+      <div class="history-filters">
+        <div class="field compact"><label for="history-user">Usuario</label><select id="history-user" data-action="history-user"><option value="">Todos</option>${users.map((user) => `<option ${user === state.historyUser ? "selected" : ""}>${escapeHtml(user)}</option>`).join("")}</select></div>
+        <div class="field compact"><label for="history-from">Desde</label><input id="history-from" type="date" data-action="history-date-from" value="${escapeAttr(state.historyDateFrom)}" /></div>
+        <div class="field compact"><label for="history-to">Hasta</label><input id="history-to" type="date" data-action="history-date-to" value="${escapeAttr(state.historyDateTo)}" /></div>
       </div>
-    </div>
+      <div class="toolbar history-actions">
+        <span class="history-count"><strong>${rows.length}</strong> movimientos</span>
+        <button class="btn" data-action="clear-history-filters">Limpiar</button>
+        <button class="btn primary" data-action="export-history" ${rows.length ? "" : "disabled"}>Exportar XLSX</button>
+      </div>
+    </section>
     <div class="table-shell">
       <table class="data-table">
         <thead><tr>${HISTORY_COLUMNS.map(([, label]) => `<th>${label}</th>`).join("")}</tr></thead>
-        <tbody>
-          ${rows.length ? rows.map((row) => `<tr>${HISTORY_COLUMNS.map(([key]) => `<td>${escapeHtml(row[key])}</td>`).join("")}</tr>`).join("") : `<tr><td class="empty" colspan="${HISTORY_COLUMNS.length}">No hay movimientos para mostrar.</td></tr>`}
-        </tbody>
+        <tbody data-history-body>${renderHistoryRows(rows)}</tbody>
       </table>
     </div>
   `;
 }
 
+function renderHistoryRows(rows) {
+  if (!rows.length) return `<tr><td class="empty-state" colspan="${HISTORY_COLUMNS.length}"><strong>No encontramos movimientos</strong><span>Ajusta la búsqueda o el rango de fechas.</span></td></tr>`;
+  return rows.map((row) => `<tr>${HISTORY_COLUMNS.map(([key]) => `<td>${key === "fecha_hora" ? escapeHtml(row.fecha_hora || row.fecha) : escapeHtml(row[key])}</td>`).join("")}</tr>`).join("");
+}
+
 function renderUsers() {
   if (state.session.rol !== "Administrador") return `<div class="panel">No tienes permiso para ver usuarios.</div>`;
   return `
-    <div class="section-head">
-      <h2>Usuarios</h2>
+    <div class="section-head content-head">
+      <div><h2>Accesos del sistema</h2><p class="muted">Administra roles y disponibilidad sin compartir contraseñas.</p></div>
       <button class="btn primary" data-action="open-modal" data-modal="user-create">Nuevo usuario</button>
     </div>
     <div class="table-shell">
@@ -519,12 +673,12 @@ function renderUsers() {
           ${state.users.map((user) => `
             <tr>
               <td>${escapeHtml(user.usuario)}</td>
-              <td>${escapeHtml(user.rol)}</td>
-              <td>${escapeHtml(user.activo)}</td>
-              <td>
+              <td><span class="role-pill">${escapeHtml(user.rol)}</span></td>
+              <td><span class="account-status ${user.activo === "Sí" ? "active" : "inactive"}"><i></i>${user.activo === "Sí" ? "Activo" : "Inactivo"}</span></td>
+              <td class="row-actions">
                 <button class="btn" data-action="open-modal" data-modal="user-edit" data-id="${escapeAttr(user.usuario)}">Editar</button>
-                <button class="btn" data-action="open-modal" data-modal="user-password" data-id="${escapeAttr(user.usuario)}">Clave</button>
-                <button class="btn" data-action="toggle-user-status" data-id="${escapeAttr(user.usuario)}">${user.activo === "Sí" ? "Desactivar" : "Activar"}</button>
+                <button class="btn" data-action="open-modal" data-modal="user-password" data-id="${escapeAttr(user.usuario)}">Cambiar clave</button>
+                <button class="btn ${user.activo === "Sí" ? "danger-ghost" : ""}" data-action="toggle-user-status" data-id="${escapeAttr(user.usuario)}" data-current="${escapeAttr(user.activo)}">${user.activo === "Sí" ? "Desactivar" : "Activar"}</button>
               </td>
             </tr>
           `).join("")}
@@ -541,19 +695,22 @@ function renderModal() {
   if (modal.type === "data") return modalShell(modal.editing ? "Editar información del datafono" : "Datos del datafono", renderDataForm(modal.row, modal.editing), "wide");
   if (modal.type === "history") return modalShell("Bitácora de cambios", renderBitacora(modal.row), "wide");
   if (modal.type === "resguardo") return modalShell("Generar resguardo PDF", renderResguardoForm(), "wide");
+  if (modal.type === "bulk-edit") return modalShell("Actualizar selección", renderBulkEditForm(), "wide");
   if (modal.type === "user-create") return modalShell("Nuevo usuario", renderUserCreateForm());
   if (modal.type === "user-edit") return modalShell("Editar usuario", renderUserEditForm(modal.user));
   if (modal.type === "user-password") return modalShell("Cambiar contraseña", renderUserPasswordForm(modal.user));
+  if (modal.type === "confirm") return modalShell(modal.title, renderConfirmDialog(modal), "confirm-dialog");
   return "";
 }
 
 function modalShell(title, body, extraClass = "") {
+  const titleId = `modal-title-${slugify(title)}`;
   return `
     <div class="modal-backdrop">
-      <section class="modal ${extraClass}">
+      <section class="modal ${extraClass}" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">
         <div class="modal-head">
-          <h3>${title}</h3>
-          <button class="close-btn" data-action="close-modal">×</button>
+          <h3 id="${titleId}">${escapeHtml(title)}</h3>
+          <button class="close-btn" data-action="close-modal" aria-label="Cerrar ventana">×</button>
         </div>
         ${body}
       </section>
@@ -564,6 +721,7 @@ function modalShell(title, body, extraClass = "") {
 function renderRegisterForm() {
   return `
     <form data-form="register">
+      ${formErrorRegion()}
       <div class="grid-3">
         ${field("numero_terminal", "Número Terminal *")}
         ${field("numero_afiliado", "Número Afiliado *")}
@@ -583,12 +741,19 @@ function renderRegisterForm() {
 function renderStatusForm(row) {
   return `
     <form data-form="status" data-id="${escapeAttr(row.id)}">
-      <p><strong>Terminal:</strong> ${escapeHtml(row.numero_terminal)} | <strong>Afiliado:</strong> ${escapeHtml(row.numero_afiliado)} | <strong>Hotel:</strong> ${escapeHtml(row.hotel)} | <strong>Estatus:</strong> ${escapeHtml(row.estatus)}</p>
+      ${formErrorRegion()}
+      <input type="hidden" name="actualizado_el" value="${escapeAttr(row.actualizado_el)}" />
+      <div class="record-summary"><div><small>Terminal</small><strong>${escapeHtml(row.numero_terminal)}</strong></div><div><small>Afiliado</small><strong>${escapeHtml(row.numero_afiliado)}</strong></div><div><small>Hotel</small><strong>${escapeHtml(row.hotel)}</strong></div><div><small>Estatus actual</small>${statusPill(row.estatus)}</div></div>
       <div class="grid-3">
-        ${selectField("estatus", "Estatus", state.config.Estatus, row.estatus)}
+        ${selectField("estatus", "Estatus *", state.config.Estatus, row.estatus)}
         ${field("fecha_cambio", "Fecha cambio", todayIso(), "date")}
-        ${field("sustituido_por", "Sustituido por", row.sustituido_por)}
+        ${field("sustituido_por", "Sustituido por", row.sustituido_por, "text", `${row.estatus === "Sustituido" ? "required " : "disabled "}aria-describedby="sustituto-hint"`)}
       </div>
+      <p class="field-hint" id="sustituto-hint">Obligatorio cuando el nuevo estatus sea Sustituido.</p>
+      <label class="check-row sensitive-confirm" ${["Sustituido", "Decomisado", "Baja"].includes(row.estatus) ? "" : "hidden"}>
+        <input type="checkbox" name="confirm_sensitive" value="Sí" ${["Sustituido", "Decomisado", "Baja"].includes(row.estatus) ? "required" : "disabled"} />
+        <span>Confirmo que revisé esta acción y su impacto operativo.</span>
+      </label>
       ${field("motivo", "Motivo", "Actualización de estatus")}
       ${textareaField("observacion", "Observación", row.observacion)}
       ${modalButtons("Guardar estatus")}
@@ -600,6 +765,8 @@ function renderDataForm(row, editing = false) {
   const locked = editing ? "" : "disabled";
   return `
     <form data-form="data" data-id="${escapeAttr(row.id)}">
+      ${formErrorRegion()}
+      <input type="hidden" name="actualizado_el" value="${escapeAttr(row.actualizado_el)}" />
       <div class="grid-3">
         ${field("numero_terminal", "Número Terminal *", row.numero_terminal, "text", locked)}
         ${field("numero_afiliado", "Número Afiliado *", row.numero_afiliado, "text", locked)}
@@ -630,7 +797,7 @@ function renderBitacora(row) {
       <table class="data-table">
         <thead><tr>${HISTORY_COLUMNS.map(([, label]) => `<th>${label}</th>`).join("")}</tr></thead>
         <tbody>
-          ${items.length ? items.map((item) => `<tr>${HISTORY_COLUMNS.map(([key]) => `<td>${escapeHtml(item[key])}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${HISTORY_COLUMNS.length}" class="empty">Esta terminal no tiene cambios registrados.</td></tr>`}
+          ${items.length ? renderHistoryRows(items) : `<tr><td colspan="${HISTORY_COLUMNS.length}" class="empty">Esta terminal no tiene cambios registrados.</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -638,18 +805,19 @@ function renderBitacora(row) {
 }
 
 function renderResguardoForm() {
-  const rows = getFilteredInventory();
+  const rows = getSelectedInventory();
   const responsables = uniqueValues(rows, "responsable").filter(Boolean);
   const responsableDefault = responsables.length === 1 ? responsables[0] : "";
   return `
     <form data-form="resguardo">
-      <p class="muted">Se generará con los ${rows.length} datáfonos filtrados/visibles. Fecha: ${formatDate(todayIso())}.</p>
+      ${formErrorRegion()}
+      <div class="resguardo-summary"><strong>${rows.length} ${rows.length === 1 ? "datafono" : "datafonos"}</strong><span>seleccionados para el documento del ${formatDate(todayIso())}</span><small>${escapeHtml(rows.slice(0, 4).map((row) => row.numero_terminal).join(", "))}${rows.length > 4 ? ` y ${rows.length - 4} más` : ""}</small></div>
       <div class="grid-2">
-        ${selectField("tipo_documento", "Tipo de documento", ["Cédula", "Pasaporte"], "Cédula")}
-        ${field("numero_documento", "Cédula o pasaporte")}
-        ${field("nombre_responsable", "Nombre del responsable", responsableDefault)}
-        ${field("puesto_responsable", "Puesto del responsable")}
-        ${field("nombre_entrega", "Nombre de quien entrega")}
+        ${selectField("tipo_documento", "Tipo de documento *", ["Cédula", "Pasaporte"], "Cédula")}
+        ${field("numero_documento", "Cédula o pasaporte *")}
+        ${field("nombre_responsable", "Nombre del responsable *", responsableDefault)}
+        ${field("puesto_responsable", "Puesto del responsable *")}
+        ${field("nombre_entrega", "Nombre de quien entrega *")}
       </div>
       ${textareaField("observacion_resguardo", "Observación del resguardo")}
       ${modalButtons("Generar PDF")}
@@ -657,13 +825,35 @@ function renderResguardoForm() {
   `;
 }
 
+function renderBulkEditForm() {
+  const rows = getSelectedInventory();
+  return `
+    <form data-form="bulk-edit">
+      ${formErrorRegion()}
+      <div class="resguardo-summary"><strong>${rows.length} ${rows.length === 1 ? "datafono seleccionado" : "datafonos seleccionados"}</strong><span>Completa únicamente los valores que quieres aplicar a toda la selección.</span></div>
+      <div class="grid-3">
+        ${selectField("estatus", "Estatus", (state.config.Estatus || []).filter((value) => value !== "Sustituido"))}
+        ${selectField("hotel", "Hotel", state.config.Hoteles)}
+        ${selectField("area", "Área", state.config.Areas)}
+        ${selectField("departamento", "Departamento", state.config.Departamentos)}
+        ${field("responsable", "Responsable")}
+      </div>
+      <label class="check-row bulk-clear"><input type="checkbox" name="clear_responsable" value="Sí" /><span>Quitar el responsable actual de todos los seleccionados</span></label>
+      ${field("motivo", "Motivo del cambio *", "Actualización masiva")}
+      <p class="field-hint">El estatus Sustituido se registra individualmente porque requiere indicar la terminal sustituta.</p>
+      ${modalButtons("Aplicar cambios")}
+    </form>
+  `;
+}
+
 function renderUserCreateForm() {
   return `
     <form data-form="user-create">
-      ${field("usuario", "Usuario")}
-      ${field("clave", "Contraseña", "", "password")}
-      ${selectField("rol", "Rol", state.config.Roles, "Usuario")}
-      ${selectField("activo", "Activo", state.config.Activo, "Sí")}
+      ${formErrorRegion()}
+      ${field("usuario", "Usuario *")}
+      ${field("clave", "Contraseña *", "", "password", 'minlength="8" autocomplete="new-password"')}
+      ${selectField("rol", "Rol *", state.config.Roles, "Usuario")}
+      ${selectField("activo", "Activo *", state.config.Activo, "Sí")}
       ${modalButtons("Crear usuario")}
     </form>
   `;
@@ -672,7 +862,8 @@ function renderUserCreateForm() {
 function renderUserEditForm(user) {
   return `
     <form data-form="user-edit" data-id="${escapeAttr(user.usuario)}">
-      ${field("usuario", "Usuario", user.usuario)}
+      ${formErrorRegion()}
+      ${field("usuario", "Usuario *", user.usuario)}
       ${selectField("rol", "Rol", state.config.Roles, user.rol)}
       ${selectField("activo", "Activo", state.config.Activo, user.activo)}
       ${modalButtons("Guardar usuario")}
@@ -683,22 +874,29 @@ function renderUserEditForm(user) {
 function renderUserPasswordForm(user) {
   return `
     <form data-form="user-password" data-id="${escapeAttr(user.usuario)}">
+      ${formErrorRegion()}
       <p>Cambiar contraseña de <strong>${escapeHtml(user.usuario)}</strong>.</p>
-      ${field("clave", "Nueva contraseña", "", "password")}
+      ${field("clave", "Nueva contraseña *", "", "password", 'minlength="8" autocomplete="new-password"')}
       ${modalButtons("Guardar contraseña")}
     </form>
   `;
 }
 
 function field(name, label, value = "", type = "text", attrs = "") {
-  return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${escapeAttr(value)}" ${attrs} /></div>`;
+  const id = `field-${name}`;
+  const required = label.includes("*") ? "required" : "";
+  const cleanLabel = label.replace(" *", "");
+  return `<div class="field"><label for="${id}">${escapeHtml(cleanLabel)}${required ? '<span class="required-mark" aria-hidden="true">*</span>' : ""}</label><input id="${id}" name="${name}" type="${type}" value="${escapeAttr(value)}" ${required} ${attrs} /></div>`;
 }
 
 function selectField(name, label, options = [], value = "", attrs = "") {
+  const id = `field-${name}`;
+  const required = label.includes("*") ? "required" : "";
+  const cleanLabel = label.replace(" *", "");
   return `
     <div class="field">
-      <label>${label}</label>
-      <select name="${name}" ${attrs}>
+      <label for="${id}">${escapeHtml(cleanLabel)}${required ? '<span class="required-mark" aria-hidden="true">*</span>' : ""}</label>
+      <select id="${id}" name="${name}" ${required} ${attrs}>
         <option value="">Seleccione</option>
         ${(options || []).map((option) => `<option value="${escapeAttr(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
       </select>
@@ -707,14 +905,32 @@ function selectField(name, label, options = [], value = "", attrs = "") {
 }
 
 function textareaField(name, label, value = "", attrs = "") {
-  return `<div class="field" style="margin-top:14px"><label>${label}</label><textarea name="${name}" ${attrs}>${escapeHtml(value)}</textarea></div>`;
+  const id = `field-${name}`;
+  return `<div class="field field-spaced"><label for="${id}">${escapeHtml(label)}</label><textarea id="${id}" name="${name}" ${attrs}>${escapeHtml(value)}</textarea></div>`;
 }
 
 function modalButtons(primaryText) {
   return `
     <div class="grid-2" style="margin-top:16px">
-      <button class="btn primary" type="submit">${primaryText}</button>
+      <button class="btn primary" type="submit" data-busy-label="Procesando…">${primaryText}</button>
       <button class="btn" type="button" data-action="close-modal">Cerrar</button>
+    </div>
+  `;
+}
+
+function formErrorRegion() {
+  return `<div class="form-error" role="alert" hidden></div>`;
+}
+
+function renderConfirmDialog(modal) {
+  return `
+    <div class="confirm-content">
+      <span class="confirm-icon" aria-hidden="true">!</span>
+      <p>${escapeHtml(modal.message)}</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ${modal.danger ? "danger" : "primary"}" data-action="confirm-action" data-confirm-action="${escapeAttr(modal.confirmAction)}" data-id="${escapeAttr(modal.id || "")}">${escapeHtml(modal.confirmLabel || "Confirmar")}</button>
+      <button class="btn" data-action="close-modal">Cancelar</button>
     </div>
   `;
 }
@@ -742,8 +958,15 @@ async function handleClick(event) {
   const action = button.dataset.action;
   if (action === "nav") {
     state.view = button.dataset.view;
+    state.sidebarOpen = false;
     state.actionMenu = null;
     state.filterMenu = null;
+    render();
+  } else if (action === "open-sidebar") {
+    state.sidebarOpen = true;
+    render();
+  } else if (action === "close-sidebar") {
+    state.sidebarOpen = false;
     render();
   } else if (action === "refresh") {
     await loadBootstrap();
@@ -754,8 +977,9 @@ async function handleClick(event) {
   } else if (action === "open-modal") {
     openModal(button.dataset.modal, button.dataset.id);
   } else if (action === "close-modal") {
-    state.modal = null;
-    render();
+    closeModal();
+  } else if (action === "toggle-password") {
+    togglePasswordVisibility(button);
   } else if (action === "enable-data-edit") {
     if (state.modal?.type === "data") state.modal.editing = true;
     render();
@@ -790,6 +1014,12 @@ async function handleClick(event) {
   } else if (action === "sort-filter") {
     state.inventorySort = { column: button.dataset.column, dir: button.dataset.dir };
     render();
+  } else if (action === "sort-column") {
+    const current = state.inventorySort;
+    state.inventorySort = current?.column === button.dataset.column
+      ? { column: button.dataset.column, dir: current.dir === "asc" ? "desc" : "asc" }
+      : { column: button.dataset.column, dir: "asc" };
+    render();
   } else if (action === "clear-filter") {
     delete state.inventoryFilters[button.dataset.column];
     if (state.inventorySort?.column === button.dataset.column) state.inventorySort = null;
@@ -803,9 +1033,54 @@ async function handleClick(event) {
   } else if (action === "export-excel") {
     exportExcel("inventario_datafonos", getFilteredInventory(), INVENTORY_COLUMNS);
   } else if (action === "export-history") {
-    exportExcel("historial_datafonos", getFilteredHistory(), HISTORY_COLUMNS);
+    exportExcel("historial_datafonos", getFilteredHistory().map((row) => ({ ...row, fecha_hora: row.fecha_hora || row.fecha })), HISTORY_COLUMNS);
+  } else if (action === "export-selected") {
+    exportExcel("inventario_datafonos_seleccion", getSelectedInventory(), INVENTORY_COLUMNS);
+  } else if (action === "clear-selection") {
+    state.selectedInventoryIds = [];
+    refreshInventoryResults();
+    refreshInventorySelectionUi();
+  } else if (action === "clear-all-filters") {
+    clearInventoryConstraints();
+    render();
+  } else if (action === "clear-search") {
+    state.inventorySearch = "";
+    render();
+  } else if (action === "remove-filter") {
+    delete state.inventoryFilters[button.dataset.column];
+    render();
+  } else if (action === "clear-sort") {
+    state.inventorySort = null;
+    render();
+  } else if (action === "inventory-preset") {
+    applyInventoryPreset(button.dataset.preset);
+  } else if (action === "open-inventory-filter") {
+    const statuses = String(button.dataset.statuses || "").split("|").filter(Boolean);
+    state.view = "inventory";
+    state.inventorySearch = "";
+    state.inventoryFilters = statuses.length ? { estatus: statuses } : {};
+    state.inventorySort = null;
+    render();
+  } else if (action === "clear-history-filters") {
+    state.historySearch = "";
+    state.historyUser = "";
+    state.historyDateFrom = "";
+    state.historyDateTo = "";
+    render();
   } else if (action === "toggle-user-status") {
-    await submitApi(`/api/users/${encodeURIComponent(button.dataset.id)}/status`, { method: "PUT" }, "Estado actualizado.");
+    const deactivating = button.dataset.current === "Sí";
+    state.modal = {
+      type: "confirm",
+      title: deactivating ? "Desactivar usuario" : "Activar usuario",
+      message: `${deactivating ? "Se bloqueará el acceso de" : "Se restaurará el acceso de"} ${button.dataset.id}.`,
+      confirmLabel: deactivating ? "Desactivar" : "Activar",
+      confirmAction: "toggle-user-status",
+      id: button.dataset.id,
+      danger: deactivating
+    };
+    render();
+  } else if (action === "confirm-action") {
+    await performConfirmedAction(button);
   }
 }
 
@@ -815,6 +1090,9 @@ async function handleSubmit(event) {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(form).entries());
   const type = form.dataset.form;
+  clearFormError(form);
+  if (!form.reportValidity()) return;
+  setFormBusy(form, true);
 
   try {
     if (type === "login") {
@@ -829,8 +1107,22 @@ async function handleSubmit(event) {
       await submitApi(`/api/inventory/${encodeURIComponent(form.dataset.id)}/status`, { method: "PUT", body: JSON.stringify(data) }, "Estatus actualizado.");
     } else if (type === "data") {
       await submitApi(`/api/inventory/${encodeURIComponent(form.dataset.id)}`, { method: "PUT", body: JSON.stringify(data) }, "Datos actualizados.");
+    } else if (type === "bulk-edit") {
+      const changes = {};
+      ["estatus", "hotel", "area", "departamento", "responsable"].forEach((field) => {
+        if (String(data[field] || "").trim()) changes[field] = data[field];
+      });
+      if (data.clear_responsable === "Sí") changes.responsable = "";
+      if (!Object.keys(changes).length) throw new Error("Indica al menos un dato para actualizar.");
+      const items = getSelectedInventory().map((row) => ({ id: row.id, actualizado_el: row.actualizado_el }));
+      await api("/api/inventory/bulk", { method: "PUT", body: JSON.stringify({ items, changes, motivo: data.motivo }) });
+      state.selectedInventoryIds = [];
+      state.modal = null;
+      await loadBootstrap();
+      showToast(`${items.length} datafonos actualizados.`, "success");
     } else if (type === "resguardo") {
-      generateResguardoPdf(data, getFilteredInventory());
+      generateResguardoPdf(data, getSelectedInventory());
+      state.selectedInventoryIds = [];
       state.modal = null;
       render();
       showToast("PDF generado.", "success");
@@ -842,7 +1134,12 @@ async function handleSubmit(event) {
       await submitApi(`/api/users/${encodeURIComponent(form.dataset.id)}/password`, { method: "PUT", body: JSON.stringify(data) }, "Contraseña actualizada.");
     }
   } catch (error) {
-    showToast(error.message, "error");
+    showFormError(form, error.message);
+    if (error.status === 409) {
+      showToast("Los datos cambiaron. Actualiza antes de intentarlo nuevamente.", "error");
+    }
+  } finally {
+    if (document.body.contains(form)) setFormBusy(form, false);
   }
 }
 
@@ -857,7 +1154,40 @@ function handleChange(event) {
   const target = event.target;
   const action = target.dataset.action;
   const menu = target.closest(".filter-menu");
-  if (action === "toggle-filter-all") {
+  const modalForm = target.closest(".modal form");
+  if (modalForm) modalForm.dataset.dirty = "true";
+  if (action === "select-row") {
+    setInventorySelected(target.dataset.id, target.checked);
+    syncRowSelection(target.dataset.id, target.checked);
+    refreshInventorySelectionUi();
+  } else if (action === "select-visible") {
+    getFilteredInventory().forEach((row) => setInventorySelected(row.id, target.checked));
+    refreshInventoryResults();
+  } else if (action === "history-user") {
+    state.historyUser = target.value;
+    refreshHistoryResults();
+  } else if (action === "history-date-from") {
+    state.historyDateFrom = target.value;
+    refreshHistoryResults();
+  } else if (action === "history-date-to") {
+    state.historyDateTo = target.value;
+    refreshHistoryResults();
+  } else if (target.name === "estatus" && target.closest('form[data-form="status"]')) {
+    const substitute = target.form.elements.sustituido_por;
+    if (substitute) {
+      substitute.disabled = target.value !== "Sustituido";
+      substitute.required = target.value === "Sustituido";
+    }
+    const confirmation = target.form.querySelector(".sensitive-confirm");
+    const checkbox = confirmation?.querySelector("input");
+    const sensitive = ["Sustituido", "Decomisado", "Baja"].includes(target.value);
+    if (confirmation && checkbox) {
+      confirmation.hidden = !sensitive;
+      checkbox.disabled = !sensitive;
+      checkbox.required = sensitive;
+      if (!sensitive) checkbox.checked = false;
+    }
+  } else if (action === "toggle-filter-all") {
     setFilterValuesChecked(menu, target.checked, getCurrentFilterSearch(menu) ? isFilterValueVisibleForSearch : () => true);
   } else if (action === "toggle-filter-year") {
     setFilterValuesChecked(menu, target.checked, (input) => input.dataset.year === target.dataset.year);
@@ -870,17 +1200,26 @@ function handleChange(event) {
 
 function handleInput(event) {
   const target = event.target;
+  const modalForm = target.closest(".modal form");
+  if (modalForm) modalForm.dataset.dirty = "true";
   if (target.dataset.action === "filter-search") {
     state.filterSearch = target.value;
     updateFilterMenuSearch(target.closest(".filter-menu"), target.value);
+  } else if (target.dataset.action === "inventory-search") {
+    state.inventorySearch = target.value;
+    refreshInventoryResults();
   } else if (target.dataset.action === "history-search") {
     state.historySearch = target.value;
-    render();
+    refreshHistoryResults();
   }
 }
 
 function openModal(type, id) {
-  if (type === "register" || type === "resguardo" || type === "user-create") {
+  if (type === "resguardo" && !getSelectedInventory().length) {
+    showToast("Selecciona al menos un datafono para generar el resguardo.", "error");
+    return;
+  }
+  if (type === "register" || type === "resguardo" || type === "bulk-edit" || type === "user-create") {
     state.modal = { type };
   } else if (type === "user-edit" || type === "user-password") {
     const user = state.users.find((item) => item.usuario === id);
@@ -891,8 +1230,32 @@ function openModal(type, id) {
   render();
 }
 
+function closeModal() {
+  const dirtyForm = document.querySelector('.modal form[data-dirty="true"]');
+  if (dirtyForm && !window.confirm("Tienes cambios sin guardar. ¿Quieres cerrar esta ventana?")) return;
+  state.modal = null;
+  render();
+}
+
+async function performConfirmedAction(button) {
+  const action = button.dataset.confirmAction;
+  button.disabled = true;
+  try {
+    if (action === "toggle-user-status") {
+      await submitApi(`/api/users/${encodeURIComponent(button.dataset.id)}/status`, { method: "PUT" }, "Estado del usuario actualizado.");
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+    button.disabled = false;
+  }
+}
+
 function getFilteredInventory() {
   let rows = [...state.inventory];
+  const search = normalizeSearchText(state.inventorySearch);
+  if (search) {
+    rows = rows.filter((row) => INVENTORY_COLUMNS.some(([key]) => normalizeSearchText(row[key]).includes(search)));
+  }
   for (const [column, selected] of Object.entries(state.inventoryFilters)) {
     rows = rows.filter((row) => selected.includes(String(row[column] || "").trim()));
   }
@@ -909,11 +1272,116 @@ function getFilteredHistory() {
   if (term) {
     rows = rows.filter((row) => Object.values(row).some((value) => String(value || "").toLowerCase().includes(term)));
   }
+  if (state.historyUser) rows = rows.filter((row) => row.usuario === state.historyUser);
+  if (state.historyDateFrom) rows = rows.filter((row) => historyDateValue(row) >= state.historyDateFrom);
+  if (state.historyDateTo) rows = rows.filter((row) => historyDateValue(row) <= state.historyDateTo);
   return rows;
+}
+
+function getSelectedInventory() {
+  return state.selectedInventoryIds
+    .map((id) => state.inventory.find((row) => row.id === id))
+    .filter(Boolean);
+}
+
+function setInventorySelected(id, selected) {
+  if (!id) return;
+  const ids = new Set(state.selectedInventoryIds);
+  if (selected) ids.add(id);
+  else ids.delete(id);
+  state.selectedInventoryIds = Array.from(ids);
+}
+
+function refreshInventoryResults() {
+  const host = document.querySelector(".inventory-results");
+  if (!host) return;
+  const rows = getFilteredInventory();
+  host.innerHTML = renderInventoryTable(rows);
+  const count = document.querySelector(".inventory-count");
+  if (count) count.textContent = `${rows.length} de ${state.inventory.length}`;
+  const filters = document.querySelector(".active-filters");
+  if (filters) filters.innerHTML = renderActiveFilterChips();
+  const clearButton = document.querySelector('[data-action="clear-all-filters"]');
+  if (clearButton) clearButton.disabled = !hasAnyInventoryConstraint();
+  const exportButton = document.querySelector('[data-action="export-excel"]');
+  if (exportButton) exportButton.disabled = !rows.length;
+  syncSelectionHeader();
+}
+
+function refreshInventorySelectionUi() {
+  const host = document.querySelector(".selection-host");
+  if (host) host.innerHTML = renderSelectionBar();
+  syncSelectionHeader();
+}
+
+function syncSelectionHeader() {
+  const headers = Array.from(document.querySelectorAll('input[data-action="select-visible"]'));
+  if (!headers.length) return;
+  const rows = getFilteredInventory();
+  const count = rows.filter((row) => state.selectedInventoryIds.includes(row.id)).length;
+  headers.forEach((header) => {
+    header.checked = rows.length > 0 && count === rows.length;
+    header.indeterminate = count > 0 && count < rows.length;
+  });
+}
+
+function syncRowSelection(id, selected) {
+  document.querySelectorAll('input[data-action="select-row"]').forEach((input) => {
+    if (input.dataset.id !== id) return;
+    input.checked = selected;
+    input.closest("tr")?.classList.toggle("selected", selected);
+    input.closest(".inventory-mobile-card")?.classList.toggle("selected", selected);
+  });
+}
+
+function refreshHistoryResults() {
+  const body = document.querySelector("[data-history-body]");
+  if (!body) return;
+  const rows = getFilteredHistory();
+  body.innerHTML = renderHistoryRows(rows);
+  const count = document.querySelector(".history-count strong");
+  if (count) count.textContent = String(rows.length);
+  const exportButton = document.querySelector('[data-action="export-history"]');
+  if (exportButton) exportButton.disabled = !rows.length;
+}
+
+function historyDateValue(row) {
+  return String(row.fecha_hora || row.fecha || "").slice(0, 10);
+}
+
+function clearInventoryConstraints() {
+  state.inventorySearch = "";
+  state.inventoryFilters = {};
+  state.inventorySort = null;
+}
+
+function hasAnyInventoryConstraint() {
+  return Boolean(state.inventorySearch || Object.keys(state.inventoryFilters).length || state.inventorySort);
+}
+
+function applyInventoryPreset(preset) {
+  state.inventorySearch = "";
+  state.inventorySort = null;
+  if (preset === "repair") state.inventoryFilters = { estatus: ["En reparación"] };
+  else if (preset === "unassigned") state.inventoryFilters = { responsable: [""] };
+  else if (preset === "out") state.inventoryFilters = { estatus: ["Decomisado", "Baja"] };
+  else state.inventoryFilters = {};
+  render();
 }
 
 function isFilterActive(column) {
   return hasInventoryFilter(column) || state.inventorySort?.column === column;
+}
+
+function inventoryColumnClass(column) {
+  if (column === "numero_terminal") return "terminal-column";
+  if (column === "estatus") return "status-column";
+  return "";
+}
+
+function sortIndicator(column) {
+  if (state.inventorySort?.column !== column) return `<span class="sort-indicator" aria-hidden="true">↕</span>`;
+  return `<span class="sort-indicator active" aria-hidden="true">${state.inventorySort.dir === "asc" ? "↑" : "↓"}</span>`;
 }
 
 function hasInventoryFilter(column) {
@@ -1146,24 +1614,40 @@ function normalizeSearchText(value) {
     .toLowerCase();
 }
 
-function metric(label, value, caption = "") {
+function metric(label, value, caption = "", statuses = [], targetView = "inventory") {
   return `
-    <div class="metric">
+    <button class="metric" data-action="${targetView === "history" ? "nav" : "open-inventory-filter"}" ${targetView === "history" ? 'data-view="history"' : `data-statuses="${escapeAttr(statuses.join("|"))}"`}>
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(value)}</strong>
       ${caption ? `<small>${escapeHtml(caption)}</small>` : ""}
-    </div>
+      <em aria-hidden="true">→</em>
+    </button>
   `;
 }
 
-function miniStat(label, value, detail) {
+function miniStat(label, value, detail, statuses = [], targetView = "inventory") {
   return `
-    <div class="mini-stat">
+    <button class="mini-stat" data-action="${targetView === "history" ? "nav" : "open-inventory-filter"}" ${targetView === "history" ? 'data-view="history"' : `data-statuses="${escapeAttr(statuses.join("|"))}"`}>
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(value)}</strong>
       <em>${escapeHtml(detail)}</em>
-    </div>
+    </button>
   `;
+}
+
+function operationalAlert(label, statuses) {
+  const rows = state.inventory.filter((row) => statuses.includes(row.estatus));
+  const withoutResponsible = rows.filter((row) => !String(row.responsable || "").trim()).length;
+  const oldest = rows
+    .map((row) => row.fecha_cambio || row.fecha_asignacion)
+    .filter(Boolean)
+    .sort()[0];
+  const detail = withoutResponsible
+    ? `${withoutResponsible} sin responsable asignado`
+    : oldest
+      ? `Seguimiento desde ${formatShortDate(oldest)}`
+      : "Requiere seguimiento operativo";
+  return { label, statuses, value: rows.length, detail };
 }
 
 function countByStatus(status) {
@@ -1192,7 +1676,7 @@ function renderStatusOverview(items, total) {
   return `
     <div class="status-overview">
       <div class="pie-wrap">
-        <div class="pie-chart" style="background:conic-gradient(${segments.join(", ")})"></div>
+        <div class="pie-chart" role="img" aria-label="Distribución de ${safeTotal} datafonos por estatus" style="background:conic-gradient(${segments.join(", ")})"></div>
         <div class="pie-caption">
           <strong>${safeTotal}</strong>
           <span>datafonos</span>
@@ -1215,15 +1699,16 @@ function renderStatusOverview(items, total) {
 function renderAlertList(items) {
   return `
     <div class="alert-list">
-      ${items.map(([label, value, detail], index) => `
-        <div class="alert-item">
-          <i style="background:${dashboardColor(label, index + 2)}"></i>
+      ${items.map((item, index) => `
+        <button class="alert-item" data-action="open-inventory-filter" data-statuses="${escapeAttr(item.statuses.join("|"))}">
+          <i style="background:${dashboardColor(item.label, index + 2)}"></i>
           <div>
-            <strong>${escapeHtml(value)}</strong>
-            <span>${escapeHtml(label)}</span>
-            <small>${escapeHtml(detail)}</small>
+            <strong>${escapeHtml(item.value)}</strong>
+            <span>${escapeHtml(item.label)}</span>
+            <small>${escapeHtml(item.detail)}</small>
           </div>
-        </div>
+          <span class="alert-arrow" aria-hidden="true">→</span>
+        </button>
       `).join("")}
     </div>
   `;
@@ -1237,7 +1722,7 @@ function renderBars(items, options = {}) {
   return `<div class="chart-list ${options.large ? "chart-list-large" : ""}">${rows.map(([label, value]) => `
     <div class="bar-row" style="--bar-color:${dashboardColor(label)}">
       <span>${escapeHtml(label)}</span>
-      <div class="bar"><span style="width:${Math.max(4, (value / max) * 100)}%"></span></div>
+      <div class="bar" role="img" aria-label="${escapeAttr(label)}: ${value}"><span style="width:${Math.max(4, (value / max) * 100)}%"></span></div>
       <strong>${value}</strong>
       ${options.large ? `<small>${Math.round((value / max) * 100)}%</small>` : ""}
     </div>
@@ -1286,20 +1771,213 @@ function renderToast() {
   if (!state.toast) return;
   const toast = document.createElement("div");
   toast.className = `toast ${state.toast.type}`;
+  toast.setAttribute("role", state.toast.type === "error" ? "alert" : "status");
+  toast.setAttribute("aria-live", state.toast.type === "error" ? "assertive" : "polite");
   toast.textContent = state.toast.message;
   document.body.appendChild(toast);
 }
 
+function setFormBusy(form, busy) {
+  form.setAttribute("aria-busy", String(busy));
+  form.querySelectorAll("button, input, select, textarea").forEach((control) => {
+    if (busy) {
+      control.dataset.wasDisabled = String(control.disabled);
+      control.disabled = true;
+    } else {
+      control.disabled = control.dataset.wasDisabled === "true";
+      delete control.dataset.wasDisabled;
+    }
+  });
+  const submit = form.querySelector('button[type="submit"]');
+  if (!submit) return;
+  if (busy) {
+    submit.dataset.originalText = submit.textContent;
+    submit.textContent = submit.dataset.busyLabel || "Procesando…";
+    submit.classList.add("busy");
+  } else {
+    submit.textContent = submit.dataset.originalText || submit.textContent;
+    submit.classList.remove("busy");
+  }
+}
+
+function showFormError(form, message) {
+  const region = form.querySelector(".form-error");
+  if (!region) {
+    showToast(message, "error");
+    return;
+  }
+  region.textContent = message;
+  region.hidden = false;
+  region.focus?.();
+}
+
+function clearFormError(form) {
+  const region = form.querySelector(".form-error");
+  if (!region) return;
+  region.hidden = true;
+  region.textContent = "";
+}
+
+function togglePasswordVisibility(button) {
+  const input = button.closest(".password-field")?.querySelector('input[name="clave"]');
+  if (!input) return;
+  const visible = input.type === "text";
+  input.type = visible ? "password" : "text";
+  button.textContent = visible ? "Mostrar" : "Ocultar";
+  button.setAttribute("aria-label", visible ? "Mostrar contraseña" : "Ocultar contraseña");
+}
+
+function focusActiveDialog() {
+  if (!state.modal) return;
+  queueMicrotask(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    const preferred = dialog?.querySelector("input:not([type=hidden]):not(:disabled), select:not(:disabled), button:not(:disabled)");
+    (preferred || dialog)?.focus();
+  });
+}
+
+function trapDialogFocus(event) {
+  const dialog = document.querySelector('[role="dialog"]');
+  if (!dialog) return;
+  const focusable = Array.from(dialog.querySelectorAll('button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]'));
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function formatSyncTime(value) {
+  if (!value) return "Pendiente";
+  const date = new Date(String(value).replace(" ", "T") + "-04:00");
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-DO", { hour: "numeric", minute: "2-digit", hour12: true }).format(date);
+}
+
+function formatShortDate(value) {
+  const text = String(value || "").slice(0, 10);
+  const date = new Date(`${text}T12:00:00-04:00`);
+  if (Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat("es-DO", { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+function slugify(value) {
+  return normalizeSearchText(value).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "dialog";
+}
+
 function exportExcel(name, rows, columns) {
-  const html = `
-    <html><head><meta charset="utf-8"></head><body>
-      <table>
-        <thead><tr>${columns.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead>
-        <tbody>${rows.map((row) => `<tr>${columns.map(([key]) => `<td>${escapeHtml(row[key])}</td>`).join("")}</tr>`).join("")}</tbody>
-      </table>
-    </body></html>
-  `;
-  downloadBlob(`${name}_${todayIso()}.xls`, new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" }));
+  if (!rows.length) {
+    showToast("No hay datos para exportar.", "error");
+    return;
+  }
+  const sheetRows = [
+    columns.map(([, label]) => label),
+    ...rows.map((row) => columns.map(([key]) => row[key] ?? ""))
+  ];
+  const workbook = buildXlsx(sheetRows, columns.map(([, label]) => label));
+  downloadBlob(`${name}_${todayIso()}.xlsx`, new Blob([workbook], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  }));
+  showToast(`${rows.length} filas exportadas en XLSX.`, "success");
+}
+
+function buildXlsx(rows, headers) {
+  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+      <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+      <cols>${headers.map((header, index) => `<col min="${index + 1}" max="${index + 1}" width="${Math.min(34, Math.max(12, String(header).length + 4))}" customWidth="1"/>`).join("")}</cols>
+      <sheetData>${rows.map((row, rowIndex) => `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => {
+        const ref = `${xlsxColumnName(columnIndex + 1)}${rowIndex + 1}`;
+        return `<c r="${ref}" t="inlineStr"${rowIndex === 0 ? ' s="1"' : ""}><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
+      }).join("")}</row>`).join("")}</sheetData>
+      <autoFilter ref="A1:${xlsxColumnName(headers.length)}${rows.length}"/>
+    </worksheet>`;
+  const files = {
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Datos" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    "xl/styles.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0F3440"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>`,
+    "xl/worksheets/sheet1.xml": sheetXml
+  };
+  return zipStore(files);
+}
+
+function zipStore(files) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  Object.entries(files).forEach(([filename, content]) => {
+    const name = encoder.encode(filename);
+    const data = encoder.encode(content);
+    const crc = crc32(data);
+    const localHeader = concatBytes(
+      uint32(0x04034b50), uint16(20), uint16(0), uint16(0), uint16(0), uint16(0),
+      uint32(crc), uint32(data.length), uint32(data.length), uint16(name.length), uint16(0), name
+    );
+    localParts.push(localHeader, data);
+    const centralHeader = concatBytes(
+      uint32(0x02014b50), uint16(20), uint16(20), uint16(0), uint16(0), uint16(0), uint16(0),
+      uint32(crc), uint32(data.length), uint32(data.length), uint16(name.length), uint16(0),
+      uint16(0), uint16(0), uint16(0), uint32(0), uint32(offset), name
+    );
+    centralParts.push(centralHeader);
+    offset += localHeader.length + data.length;
+  });
+  const central = concatBytes(...centralParts);
+  const end = concatBytes(
+    uint32(0x06054b50), uint16(0), uint16(0), uint16(centralParts.length), uint16(centralParts.length),
+    uint32(central.length), uint32(offset), uint16(0)
+  );
+  return concatBytes(...localParts, central, end);
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function uint16(value) {
+  return new Uint8Array([value & 255, (value >>> 8) & 255]);
+}
+
+function uint32(value) {
+  return new Uint8Array([value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]);
+}
+
+function concatBytes(...parts) {
+  const output = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  parts.forEach((part) => {
+    output.set(part, offset);
+    offset += part.length;
+  });
+  return output;
+}
+
+function xlsxColumnName(index) {
+  let name = "";
+  let value = index;
+  while (value > 0) {
+    value -= 1;
+    name = String.fromCharCode(65 + (value % 26)) + name;
+    value = Math.floor(value / 26);
+  }
+  return name;
+}
+
+function escapeXml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]));
 }
 
 function generateResguardoPdf(form, rows) {
